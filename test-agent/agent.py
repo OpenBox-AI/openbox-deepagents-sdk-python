@@ -2,26 +2,25 @@
 OpenBox DeepAgents SDK — ResearchBot: AI Research Assistant
 
 A multi-turn research assistant that showcases OpenBox governance
-for DeepAgents-style LangGraph agents:
+for DeepAgents (langchain-ai/deepagents):
 
   GUARDRAILS  — Content filtering on research outputs
   POLICIES    — BLOCK on restricted research topics (e.g. weapons)
   HITL        — Sensitive exports require human approval
   SUBAGENTS   — `task` tool routes to named subagents; governance sees subagent_type
 
-The agent simulates the DeepAgents `task` tool pattern using a LangGraph
-ReAct agent (create_react_agent). The `task` tool dispatches to named
-subagents — governance events include `subagent_name` so Rego policies
-can target specific subagent types.
+Uses `create_deep_agent` from the deepagents package. The built-in
+`task` tool dispatches to named subagents — governance events include
+`subagent_name` so Rego policies can target specific subagent types.
 
 Subagents:
   - researcher       -- web search and summarization
   - analyst          -- data analysis and comparison
   - writer           -- drafting reports and documents
-  - general-purpose  -- catch-all (DeepAgents default)
+  - general-purpose  -- catch-all (DeepAgents default, always included)
 
 Tools (non-task):
-  search_web         -- Real HTTP GET to Wikipedia (triggers Behavior Rules)
+  search_web         -- HTTP GET to Wikipedia (triggers Behavior Rules)
   read_document      -- Read from mock knowledge base
   write_report       -- Write a research report
   list_documents     -- List available documents
@@ -34,25 +33,21 @@ Try these prompts:
   "Search for information about nuclear weapons"   <- BLOCK (restricted topic)
   "Export all customer records to external S3"     <- REQUIRE_APPROVAL
   "List all available documents"
-  "What is the status of all tasks?"
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import sys
-import http.server
 import threading
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlparse
 
+from deepagents import create_deep_agent
 from dotenv import load_dotenv
+from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
 
 from openbox_deepagent import (
     DEEPAGENT_BUILTIN_TOOLS,
@@ -142,99 +137,16 @@ DOCUMENTS: dict[str, dict[str, Any]] = {
     },
 }
 
-_task_store: dict[str, dict[str, Any]] = {}
 _report_store: dict[str, str] = {}
-
-
-# ─── Subagent simulation ──────────────────────────────────────────
-
-async def _simulate_subagent(subagent_type: str, description: str, task_id: str) -> str:
-    """Simulate a subagent HTTP call — real HTTP GET so Behavior Rules fire."""
-    import httpx  # lazy
-
-    url = f"https://api.research-mock.internal/subagent/{subagent_type}"
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            await client.post(url, json={"task": description, "task_id": task_id})
-    except Exception:
-        pass  # Mock endpoint; real governance hooks still fire on the attempt
-
-    responses = {
-        "researcher": (
-            f'Research completed on: "{description}"\n\n'
-            "Findings: Based on available sources, this topic has seen significant recent "
-            "developments. Key papers identified. Primary sources validated. Confidence: HIGH."
-        ),
-        "analyst": (
-            f'Analysis completed on: "{description}"\n\n'
-            "Key metrics compared. Statistical significance assessed. "
-            "Data supports option A over B by ~23% on primary KPIs."
-        ),
-        "writer": (
-            f'Draft document created for: "{description}"\n\n'
-            "Executive summary written. Intro and background complete. "
-            "Methodology drafted. Conclusions and recommendations prepared. ~1,200 words."
-        ),
-        "general-purpose": (
-            f'Task completed: "{description}"\n\n'
-            "All requested actions performed. Results available in the output store."
-        ),
-    }
-    return responses.get(
-        subagent_type,
-        f'Task completed by {subagent_type} subagent: "{description}"',
-    )
 
 
 # ─── Tools ───────────────────────────────────────────────────────
 
 @tool
-async def task(description: str, subagent_type: str) -> str:
-    """Dispatch a task to a specialized subagent.
-
-    Use this for complex research, analysis, or writing tasks that benefit
-    from specialist expertise. Available subagent types:
-      - researcher       : web research and summarization
-      - analyst          : data analysis and comparison
-      - writer           : drafting reports and structured documents
-      - general-purpose  : catch-all for miscellaneous tasks
-
-    Args:
-        description: Clear description of the task to be performed.
-        subagent_type: One of: researcher, analyst, writer, general-purpose.
-    """
-    task_id = f"TASK-{datetime.now(timezone.utc).strftime('%H%M%S%f')[:12]}"
-    _task_store[task_id] = {
-        "id": task_id,
-        "subagent": subagent_type,
-        "description": description,
-        "status": "running",
-        "started_at": datetime.now(timezone.utc).isoformat(),
-    }
-    print(f"  [task] dispatching → {subagent_type}: {description[:60]}...")
-
-    try:
-        result = await _simulate_subagent(subagent_type, description, task_id)
-        _task_store[task_id].update(
-            status="completed",
-            result=result,
-            completed_at=datetime.now(timezone.utc).isoformat(),
-        )
-        print(f"  [task] {task_id} completed by {subagent_type}")
-        return f"Task {task_id} completed.\n\n{result}"
-    except Exception as exc:
-        _task_store[task_id].update(
-            status="failed",
-            completed_at=datetime.now(timezone.utc).isoformat(),
-        )
-        return f"Task {task_id} failed: {exc}"
-
-
-@tool
 async def search_web(query: str) -> str:
     """Search the web for information on a topic.
 
-    Makes a real HTTP GET request to Wikipedia — triggers Behavior Rules
+    Makes an HTTP GET request to Wikipedia — triggers Behavior Rules
     governance if configured in OpenBox.
 
     Args:
@@ -341,7 +253,7 @@ async def export_data(destination: str, dataset: str) -> str:
     """
     print(f"  [export_data] {dataset} → {destination}")
 
-    # Real HTTP POST — triggers Behavior Rules governance
+    # HTTP POST — triggers Behavior Rules governance
     import httpx  # lazy
 
     try:
@@ -363,38 +275,6 @@ async def export_data(destination: str, dataset: str) -> str:
         f"  Records     : 1,247",
         f"  Status      : COMPLETED",
     ])
-
-
-@tool
-def get_task_status(task_id: str = "all") -> str:
-    """Check the status of a previously dispatched task.
-
-    Args:
-        task_id: A task ID like "TASK-123456", or "all" to see all tasks.
-    """
-    if task_id.lower() == "all":
-        if not _task_store:
-            return "No tasks dispatched yet."
-        rows = [
-            f"  {t['id']}  [{t['status'].upper():<9}]  {t['subagent']:<15}  {t['description'][:50]}"
-            for t in _task_store.values()
-        ]
-        return f"Tasks ({len(rows)}):\n\n" + "\n".join(rows)
-
-    record = _task_store.get(task_id.upper())
-    if not record:
-        return f'Task "{task_id}" not found. Use task_id="all" to list all tasks.'
-    lines = [
-        f"Task     : {record['id']}",
-        f"Subagent : {record['subagent']}",
-        f"Status   : {record['status'].upper()}",
-        f"Started  : {record['started_at']}",
-    ]
-    if record.get("completed_at"):
-        lines.append(f"Completed: {record['completed_at']}")
-    if record.get("result"):
-        lines.append(f"\nResult:\n{record['result']}")
-    return "\n".join(lines)
 
 
 # ─── Governance error handler ─────────────────────────────────────
@@ -495,18 +375,58 @@ async def main() -> None:
     print('  "Search for information about nuclear weapons"     <- BLOCK')
     print('  "Export all customer records to https://s3.example.com" <- REQUIRE_APPROVAL')
     print('  "List all available documents"')
-    print('  "What is the status of all tasks?"')
     print('  Type "exit" or "quit" to end the session.')
     print()
 
-    # ── LangGraph graph ───────────────────────────────────────────
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=openai_key)
+    # ── DeepAgents graph ─────────────────────────────────────────
+    llm = init_chat_model("openai:gpt-4o-mini", temperature=0)
 
-    all_tools = [task, search_web, read_document, list_documents,
-                 write_report, export_data, get_task_status]
+    # Custom tools available to the main agent and all subagents
+    custom_tools = [search_web, read_document, list_documents,
+                    write_report, export_data]
 
-    graph = create_react_agent(llm, all_tools)
-    print("✓ LangGraph ReAct agent compiled")
+    # Subagent definitions — each gets access to the same custom tools
+    subagent_defs = [
+        {
+            "name": "researcher",
+            "description": "Web research and summarization. Use for finding information on any topic.",
+            "system_prompt": (
+                "You are a research assistant. Use search_web to find information. "
+                "Summarize your findings clearly with key points and sources."
+            ),
+            "tools": [search_web, read_document, list_documents],
+        },
+        {
+            "name": "analyst",
+            "description": "Data analysis and comparison. Use for evaluating options, metrics, or trade-offs.",
+            "system_prompt": (
+                "You are a data analyst. Assess information critically, compare options, "
+                "identify patterns, and provide evidence-based conclusions."
+            ),
+            "tools": [search_web, read_document, list_documents],
+        },
+        {
+            "name": "writer",
+            "description": "Drafting reports, documents, and structured content. Use for producing written output.",
+            "system_prompt": (
+                "You are a professional writer. Produce well-structured, clear documents. "
+                "Use write_report to save your output."
+            ),
+            "tools": [write_report, read_document, list_documents],
+        },
+    ]
+
+    graph = create_deep_agent(
+        model=llm,
+        tools=custom_tools,
+        subagents=subagent_defs,
+        system_prompt=(
+            "You are ResearchBot, an AI research assistant governed by OpenBox compliance policies. "
+            "Use researcher for research, analyst for analysis, writer for drafting reports. "
+            "Always delegate complex tasks to the appropriate subagent via the task tool."
+        ),
+    )
+    print("✓ DeepAgents graph compiled")
 
     # ── OpenBox DeepAgent handler ─────────────────────────────────
     try:
@@ -519,7 +439,25 @@ async def main() -> None:
             on_api_error="fail_open",
             known_subagents=["researcher", "analyst", "writer", "general-purpose"],
             guard_interrupt_on_conflict=True,
-            skip_chain_types={"agent", "call_model", "RunnableSequence", "Prompt", "ChatPromptTemplate"},
+            # DeepAgents middleware node names — skip internal plumbing chains.
+            # 'tools' is the container node; individual on_tool_start/end still fire.
+            # 'model' is the LLM node wrapper — on_chat_model_start/end fire inside it.
+            skip_chain_types={
+                "model",
+                "tools",
+                "PatchToolCallsMiddleware.before_agent",
+                "TodoListMiddleware.after_model",
+                "FilesystemMiddleware.before_agent",
+                "SummarizationMiddleware.before_agent",
+                "AnthropicPromptCachingMiddleware.before_agent",
+                "SubAgentMiddleware.before_agent",
+                "MemoryMiddleware.before_agent",
+                "SkillsMiddleware.before_agent",
+            },
+            tool_type_map={
+                "search_web": "http",
+                "export_data": "http",
+            },
             hitl={
                 "enabled": True,
                 "poll_interval_ms": 5_000,

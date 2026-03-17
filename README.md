@@ -95,14 +95,22 @@ export OPENBOX_API_KEY="obx_live_..."
 import os
 import asyncio
 from deepagents import create_deep_agent
+from langchain.chat_models import init_chat_model
 from openbox_deepagent import create_openbox_deep_agent_handler
 
 # Your existing DeepAgents graph — no changes needed
 # IMPORTANT: do NOT pass interrupt_on if using OpenBox HITL (see HITL section)
 agent = create_deep_agent(
-    model="gpt-4o-mini",
+    model=init_chat_model("openai:gpt-4o-mini", temperature=0),
     tools=[search_web, write_report, export_data],
-    subagents=["researcher", "analyst", "writer"],
+    subagents=[
+        {"name": "researcher", "description": "Web research and summarization.",
+         "system_prompt": "You are a research assistant.", "tools": [search_web]},
+        {"name": "analyst",    "description": "Data analysis and comparison.",
+         "system_prompt": "You are a data analyst.",       "tools": [search_web]},
+        {"name": "writer",     "description": "Drafting reports and documents.",
+         "system_prompt": "You are a professional writer.", "tools": [write_report]},
+    ],
 )
 
 async def main():
@@ -470,34 +478,53 @@ governed = await create_openbox_deep_agent_handler(
 
 ### Skipping internal chain events
 
-DeepAgents emits `on_chain_start` for internal routing nodes. Skip them to reduce governance noise:
+`create_deep_agent()` emits `on_chain_start` events for internal middleware nodes. Skip these to reduce governance noise. The recommended set covers the common DeepAgents middleware node names:
 
 ```python
 governed = await create_openbox_deep_agent_handler(
     graph=agent,
     skip_chain_types={
-        "agent",
-        "call_model",
-        "RunnableSequence",
-        "Prompt",
-        "ChatPromptTemplate",
+        "model",                                    # LLM wrapper node
+        "tools",                                    # tool container node
+        "PatchToolCallsMiddleware.before_agent",
+        "TodoListMiddleware.after_model",
+        "FilesystemMiddleware.before_agent",
+        "SummarizationMiddleware.before_agent",
+        "AnthropicPromptCachingMiddleware.before_agent",
+        "SubAgentMiddleware.before_agent",
+        "MemoryMiddleware.before_agent",
+        "SkillsMiddleware.before_agent",
     },
     ...
 )
 ```
 
+> **Why?** Individual `on_tool_start`/`on_tool_end` events fire inside the `tools` node — skipping the container node does not suppress tool governance. Similarly, `on_chat_model_start`/`on_chat_model_end` fire inside `model` — skipping the wrapper node does not suppress LLM governance.
+
+To discover the exact node names your graph emits, run with `OPENBOX_DEBUG=1` and look for `[OBX_EVENT]` lines.
+
 ---
 
 ## Debugging
 
-Set `OPENBOX_DEBUG=1` to log all governance requests and responses to stdout:
+Set `OPENBOX_DEBUG=1` to log all governance requests/responses and every raw LangGraph event the SDK processes:
 
 ```bash
 OPENBOX_DEBUG=1 python agent.py
 ```
 
-Example output for a writer subagent dispatch:
+Two output streams:
 
+**`[OBX_EVENT]`** — every raw LangGraph event (to stderr):
+```
+[OBX_EVENT] on_chain_start             name='LangGraph'                  node=None
+[OBX_EVENT] on_chain_start             name='PatchToolCallsMiddleware...' node='PatchToolCallsMiddleware...'
+[OBX_EVENT] on_chat_model_start        name='ChatOpenAI'                  node='model'
+[OBX_EVENT] on_tool_start              name='task'                        node='tools'
+[OBX_EVENT] on_tool_start              name='search_web'                  node='tools'
+```
+
+**`[OpenBox Debug]`** — governance requests/responses (to stdout):
 ```
 [OpenBox Debug] governance request: {
   "event_type": "ActivityStarted",
@@ -505,15 +532,17 @@ Example output for a writer subagent dispatch:
   "activity_input": [
     {"description": "Write a report on AI safety", "subagent_type": "writer"},
     {"__openbox": {"tool_type": "a2a", "subagent_name": "writer"}}
-  ],
-  ...
+  ]
 }
 [OpenBox Debug] governance response: {
   "verdict": "require_approval",
-  "reason": "Writer subagent tasks require approval.",
-  ...
+  "reason": "Writer subagent tasks require approval."
 }
 ```
+
+#### Empty prompt handling
+
+DeepAgents emits `on_chat_model_start` for **every** LLM invocation — including internal LLM calls that may not include a human turn message. Empty prompts are skipped for `agent_validatePrompt` governance to avoid guardrail parse errors (for example: `Expecting value: line 1 column 1 (char 0)`). Only prompts that include a user turn are evaluated by prompt guardrails.
 
 ---
 

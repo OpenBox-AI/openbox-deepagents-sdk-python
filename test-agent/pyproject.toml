@@ -5,6 +5,7 @@ description = "Test DeepAgents agent using the OpenBox DeepAgent Python SDK"
 requires-python = ">=3.11"
 dependencies = [
     "openbox-deepagent>=0.1.0",
+    "deepagents>=0.1.0",
     "langchain-openai>=0.3.0",
     "langgraph>=0.2.0",
     "langchain-core>=0.3.0",
@@ -14,3 +15,4 @@ dependencies = [
 
 [tool.uv.sources]
 openbox-deepagent = { path = "../", editable = true }
+deepagents = { path = "../../deepagents/libs/deepagents", editable = true }
