@@ -226,7 +226,9 @@ result := {"decision": "BLOCK", "reason": "Search blocked: this topic is restric
     input.activity_type == "search_web"
     not input.hook_trigger
     count(input.activity_input) > 0
-    query := input.activity_input[0]
+    entry := input.activity_input[0]
+    is_object(entry)
+    query := entry.query
     is_string(query)
     some term in restricted_terms
     contains(lower(query), term)
@@ -251,11 +253,14 @@ result := {"decision": "REQUIRE_APPROVAL", "reason": "Writing a confidential rep
 }
 
 # Writer subagent tasks require approval (may produce sensitive documents)
+# The SDK appends {"__openbox": {"tool_type": "a2a", "subagent_name": "writer"}} to activity_input
 result := {"decision": "REQUIRE_APPROVAL", "reason": "Tasks dispatched to the writer subagent require approval."} if {
     input.event_type == "ActivityStarted"
     input.activity_type == "task"
     not input.hook_trigger
-    input.subagent_name == "writer"
+    some item in input.activity_input
+    meta := item["__openbox"]
+    meta.subagent_name == "writer"
 }
 ```
 
@@ -267,7 +272,7 @@ result := {"decision": "REQUIRE_APPROVAL", "reason": "Tasks dispatched to the wr
 {
   "event_type": "ActivityStarted",
   "activity_type": "search_web",
-  "activity_input": ["latest developments in LangGraph"],
+  "activity_input": [{"query": "latest developments in LangGraph"}],
   "agent_id": "agent-123",
   "workflow_id": "run-abc",
   "run_id": "run-abc",
@@ -288,7 +293,7 @@ Expected: green **CONTINUE**.
 {
   "event_type": "ActivityStarted",
   "activity_type": "search_web",
-  "activity_input": ["nuclear weapon enrichment process"],
+  "activity_input": [{"query": "nuclear weapon enrichment process"}],
   "agent_id": "agent-123",
   "workflow_id": "run-abc",
   "run_id": "run-abc",
@@ -351,8 +356,10 @@ Expected: orange **REQUIRE_APPROVAL**.
 {
   "event_type": "ActivityStarted",
   "activity_type": "task",
-  "activity_input": [{"description": "Write a report on AI risks", "subagent_type": "writer"}],
-  "subagent_name": "writer",
+  "activity_input": [
+    {"description": "Write a report on AI risks", "subagent_type": "writer"},
+    {"__openbox": {"tool_type": "a2a", "subagent_name": "writer"}}
+  ],
   "agent_id": "agent-123",
   "workflow_id": "run-abc",
   "run_id": "run-abc",
@@ -373,8 +380,10 @@ Expected: orange **REQUIRE_APPROVAL**.
 {
   "event_type": "ActivityStarted",
   "activity_type": "task",
-  "activity_input": [{"description": "Research LangGraph architecture", "subagent_type": "researcher"}],
-  "subagent_name": "researcher",
+  "activity_input": [
+    {"description": "Research LangGraph architecture", "subagent_type": "researcher"},
+    {"__openbox": {"tool_type": "a2a", "subagent_name": "researcher"}}
+  ],
   "agent_id": "agent-123",
   "workflow_id": "run-abc",
   "run_id": "run-abc",
@@ -589,7 +598,7 @@ OpenBoxDeepAgentHandler.ainvoke()
     │       │                                   │
     │       │                               subagent_name extracted from tool input
     │       │                               (e.g. subagent_type="researcher")
-    │       │                               Policy evaluated against subagent_name
+    │       │                               Policy evaluates input.activity_type == "task"
     │       │                               If REQUIRE_APPROVAL → HITL polling
     │       │                               If BLOCK → GovernanceBlockedError
     │       │
@@ -618,16 +627,49 @@ In real DeepAgents, subagents run synchronously *inside* the `task` tool body �
 }
 ```
 
-`OpenBoxDeepAgentHandler._resolve_deepagent_subagent_name()` extracts this and sets `subagent_name` on the governance event sent to Core. This allows Rego policies to target specific subagents:
+`OpenBoxDeepAgentHandler._resolve_deepagent_subagent_name()` extracts this and sets `subagent_name` on the governance event sent to Core.
+
+The SDK also appends an `__openbox` sentinel to `activity_input` (see §6.3) containing `tool_type` and `subagent_name`. Since Core forwards `activity_input` as-is to OPA, Rego policies can iterate it to discriminate between subagents without any Core changes:
 
 ```rego
-# Only fires when the writer subagent is dispatched
-input.subagent_name == "writer"
+some item in input.activity_input
+meta := item["__openbox"]
+meta.subagent_name == "writer"
 ```
 
-Without this, all `task` tool calls would look identical to Core and subagent-level governance would be impossible.
+Without this handler, the `task` tool's subagent dispatch would have no governance at all.
 
-### 6.3 Why `not input.hook_trigger` is required in all REQUIRE_APPROVAL / BLOCK rules
+### 6.3 Tool type classification via `__openbox` metadata
+
+Core only forwards `activity_type` and `activity_input` to OPA. The SDK exploits this by **appending a sentinel `__openbox` object** to `activity_input` on every classified tool event:
+
+```json
+[
+  {"description": "Write a report...", "subagent_type": "writer"},
+  {"__openbox": {"tool_type": "a2a", "subagent_name": "writer"}}
+]
+```
+
+Rego iterates `activity_input` to find it:
+
+```rego
+some item in input.activity_input
+meta := item["__openbox"]
+meta.subagent_name == "writer"
+```
+
+The sentinel is only appended when `tool_type` or `subagent_name` is resolved — unclassified tools send `activity_input` unchanged.
+
+**Classification rules (SDK side):**
+
+| Tool | `tool_type` | `subagent_name` | How |
+|---|---|---|---|
+| `search_web` | `http` | — | Declared in `tool_type_map` |
+| `export_data` | `http` | — | Declared in `tool_type_map` |
+| `task` (writer) | `a2a` | `writer` | `subagent_name` resolved automatically |
+| `write_report` | — | — | Not in `tool_type_map` — no sentinel appended |
+
+### 6.4 Why `not input.hook_trigger` is required in all REQUIRE_APPROVAL / BLOCK rules
 
 ResearchBot's `search_web` and `export_data` tools make real HTTP calls. The OpenBox hook layer intercepts these via `httpx` telemetry and sends `ActivityStarted` events with `hook_trigger: true`. Without the `not input.hook_trigger` guard:
 
@@ -636,7 +678,7 @@ ResearchBot's `search_web` and `export_data` tools make real HTTP calls. The Ope
 
 The guard prevents double-triggering by ensuring policy rules only evaluate the direct tool invocation, not the hook-level HTTP observation.
 
-### 6.4 Debugging
+### 6.5 Debugging
 
 | Goal | How |
 |---|---|
