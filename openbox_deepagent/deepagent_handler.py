@@ -29,9 +29,10 @@ What this handler adds on top of openbox-langgraph-sdk
 
 from __future__ import annotations
 
-import os
+import dataclasses
+import sys
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openbox_langgraph.langgraph_handler import (
     OpenBoxLangGraphHandler,
@@ -39,6 +40,9 @@ from openbox_langgraph.langgraph_handler import (
     create_openbox_graph_handler,
 )
 from openbox_langgraph.types import LangGraphStreamEvent
+
+if TYPE_CHECKING:
+    from langgraph.graph.state import CompiledStateGraph
 
 # ═══════════════════════════════════════════════════════════════════
 # DeepAgents built-in tool names
@@ -86,12 +90,26 @@ def _resolve_deepagent_subagent_name(event: LangGraphStreamEvent) -> str | None:
             return subagent_type
 
     # Fallback: DeepAgents default is general-purpose
+    if sys.stderr and __import__("os").environ.get("OPENBOX_DEBUG"):
+        sys.stderr.write(
+            f"[OpenBox Debug] task tool input missing subagent_type, "
+            f"defaulting to general-purpose. raw_input={raw_input!r}\n"
+        )
     return "general-purpose"
 
 
 # ═══════════════════════════════════════════════════════════════════
 # interrupt_on conflict detection
 # ═══════════════════════════════════════════════════════════════════
+
+def _hitl_enabled(hitl: Any) -> bool:
+    """Return True if the HITL config indicates polling is enabled."""
+    if hitl is None:
+        return False
+    if isinstance(hitl, dict):
+        return bool(hitl.get("enabled", False))
+    return bool(getattr(hitl, "enabled", False))
+
 
 def _graph_has_interrupt_on(graph: Any) -> bool:
     """Check whether the compiled graph has interrupt_before or interrupt_after configured.
@@ -175,10 +193,17 @@ class OpenBoxDeepAgentHandler(OpenBoxLangGraphHandler):
 
     def __init__(
         self,
-        graph: Any,
+        graph: CompiledStateGraph,
         options: OpenBoxDeepAgentHandlerOptions | None = None,
     ) -> None:
         opts = options or OpenBoxDeepAgentHandlerOptions()
+
+        if not opts.known_subagents:
+            import warnings
+            warnings.warn(
+                "[OpenBox] known_subagents is empty — subagent policy targeting disabled",
+                stacklevel=2,
+            )
 
         # Inject the DeepAgents subagent resolver
         opts.resolve_subagent_name = _resolve_deepagent_subagent_name
@@ -211,8 +236,8 @@ class OpenBoxDeepAgentHandler(OpenBoxLangGraphHandler):
 # Factory
 # ═══════════════════════════════════════════════════════════════════
 
-async def create_openbox_deep_agent_handler(
-    graph: Any,
+def create_openbox_deep_agent_handler(
+    graph: CompiledStateGraph,
     *,
     api_url: str,
     api_key: str,
@@ -248,7 +273,7 @@ async def create_openbox_deep_agent_handler(
         A configured `OpenBoxDeepAgentHandler` ready to govern the DeepAgents graph.
 
     Example:
-        >>> governed = await create_openbox_deep_agent_handler(
+        >>> governed = create_openbox_deep_agent_handler(
         ...     graph=agent,
         ...     api_url=os.environ["OPENBOX_URL"],
         ...     api_key=os.environ["OPENBOX_API_KEY"],
@@ -265,27 +290,11 @@ async def create_openbox_deep_agent_handler(
         validate=validate,
     )
 
+    valid_fields = {f.name for f in dataclasses.fields(OpenBoxDeepAgentHandlerOptions)}
     options = OpenBoxDeepAgentHandlerOptions(
         api_timeout=governance_timeout,
         known_subagents=known_subagents or ["general-purpose"],
         guard_interrupt_on_conflict=guard_interrupt_on_conflict,
-        **{
-            k: v
-            for k, v in handler_kwargs.items()
-            if k in OpenBoxDeepAgentHandlerOptions.__dataclass_fields__
-        },
+        **{k: v for k, v in handler_kwargs.items() if k in valid_fields},
     )
     return OpenBoxDeepAgentHandler(graph, options)
-
-
-# ═══════════════════════════════════════════════════════════════════
-# Private helpers
-# ═══════════════════════════════════════════════════════════════════
-
-def _hitl_enabled(hitl: Any) -> bool:
-    """Return True if the HITL config indicates polling is enabled."""
-    if hitl is None:
-        return False
-    if isinstance(hitl, dict):
-        return bool(hitl.get("enabled", False))
-    return bool(getattr(hitl, "enabled", False))

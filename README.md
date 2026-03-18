@@ -172,7 +172,7 @@ Policies are written in [Rego](https://www.openpolicyagent.org/docs/latest/polic
 | `input.workflow_type` | `string` | Your `agent_name` |
 | `input.workflow_id` | `string` | Session workflow ID |
 | `input.trust_tier` | `int` | Agent trust tier (1–4) from dashboard |
-| `input.hook_trigger` | `bool` | `true` when event is a hook-level HTTP re-evaluation |
+| `input.hook_trigger` | `bool` | `true` when event is triggered by a new span (e.g., outbound HTTP call) |
 
 **Example — block a restricted research topic:**
 
@@ -209,7 +209,7 @@ result := {"decision": "BLOCK", "reason": "Search blocked: restricted research t
 | `REQUIRE_APPROVAL` | Agent pauses; human must approve or reject in dashboard |
 | `HALT` | `GovernanceHaltError` raised — session terminated |
 
-> **Always add `not input.hook_trigger`** to `BLOCK` and `REQUIRE_APPROVAL` rules. The SDK's HTTP telemetry layer intercepts outgoing HTTP calls and sends a second `ActivityStarted` event (with `hook_trigger: true`). Without this guard, those rules will fire twice — once for the tool call and once for the underlying HTTP request.
+> **Always add `not input.hook_trigger`** to `BLOCK` and `REQUIRE_APPROVAL` rules. When a tool makes an outbound HTTP call, the SDK detects the new span and sends a second `ActivityStarted` event with `hook_trigger: true`. Without this guard, those rules will fire twice — once for the tool call and once for the span-triggered event.
 
 ---
 
