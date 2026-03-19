@@ -44,6 +44,49 @@ import threading
 from datetime import datetime, timezone
 from typing import Any
 
+
+class _Tee:
+    def __init__(self, primary: Any, secondary: Any) -> None:
+        self._primary = primary
+        self._secondary = secondary
+
+    def write(self, data: str) -> int:
+        n = 0
+        try:
+            n = self._primary.write(data)
+        finally:
+            try:
+                self._secondary.write(data)
+            except Exception:
+                pass
+        return n
+
+    def flush(self) -> None:
+        try:
+            self._primary.flush()
+        finally:
+            try:
+                self._secondary.flush()
+            except Exception:
+                pass
+
+    def isatty(self) -> bool:
+        try:
+            return bool(self._primary.isatty())
+        except Exception:
+            return False
+
+
+_debug_log_fp = None
+if os.environ.get("OPENBOX_DEBUG"):
+    _debug_log_path = os.environ.get("OPENBOX_DEBUG_LOG", "./openbox-debug.txt")
+    try:
+        _debug_log_fp = open(_debug_log_path, "a", encoding="utf-8")
+        sys.stdout = _Tee(sys.stdout, _debug_log_fp)  # type: ignore[assignment]
+        sys.stderr = _Tee(sys.stderr, _debug_log_fp)  # type: ignore[assignment]
+    except Exception:
+        _debug_log_fp = None
+
 from deepagents import create_deep_agent
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
