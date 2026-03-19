@@ -146,10 +146,14 @@ asyncio.run(main())
 | `known_subagents` | `list[str]` | `["general-purpose"]` | Subagent names from `create_deep_agent(subagents=[...])` |
 | `validate` | `bool` | `True` | Validate API key against server on startup |
 | `on_api_error` | `str` | `"fail_open"` | `"fail_open"` or `"fail_closed"` |
-| `api_timeout` | `float` | `30.0` | HTTP timeout in seconds for governance calls |
+| `governance_timeout` | `float` | `30.0` | HTTP timeout in seconds for governance calls |
 | `session_id` | `str` | `None` | Optional session identifier |
 | `hitl` | `dict` | `{}` | Human-in-the-loop config (see [HITL](#human-in-the-loop-hitl)) |
 | `guard_interrupt_on_conflict` | `bool` | `True` | Raise if `interrupt_on` and OpenBox HITL are both enabled |
+| `send_chain_start_event` | `bool` | `True` | Send `WorkflowStarted` event |
+| `send_chain_end_event` | `bool` | `True` | Send `WorkflowCompleted` event |
+| `send_llm_start_event` | `bool` | `True` | Send `LLMStarted` event (enables prompt guardrails) |
+| `send_llm_end_event` | `bool` | `True` | Send `LLMCompleted` event |
 | `tool_type_map` | `dict[str, str]` | `{}` | Map tool names to semantic types for classification |
 | `skip_chain_types` | `set[str]` | `set()` | Chain node names to skip |
 | `skip_tool_types` | `set[str]` | `set()` | Tool names to skip entirely |
@@ -312,6 +316,7 @@ governed = await create_openbox_deep_agent_handler(
 | `enabled` | `bool` | `False` | Enable HITL polling |
 | `poll_interval_ms` | `int` | `5000` | How often to poll for a decision (ms) |
 | `max_wait_ms` | `int` | `300000` | Total wait before `ApprovalTimeoutError` (ms) |
+| `skip_tool_types` | `set[str]` | `set()` | Tools that never wait for HITL |
 
 #### Conflict with DeepAgents `interrupt_on`
 
