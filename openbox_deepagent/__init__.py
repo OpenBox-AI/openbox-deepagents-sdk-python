@@ -1,36 +1,38 @@
 """
-OpenBox DeepAgents SDK — extends openbox-langgraph-sdk for DeepAgents graphs.
+OpenBox DeepAgents SDK — governance middleware for DeepAgents graphs.
 
-Adds DeepAgents-specific governance:
-- Subagent detection via the `task` tool's `subagent_type` argument
-- interrupt_on conflict guard (DeepAgents HumanInTheLoopMiddleware vs OpenBox HITL)
-- Built-in tool classification for Rego policy targeting
+Provides two integration approaches:
 
-Example:
-    >>> from openbox_deepagent import create_openbox_deep_agent_handler
-    >>> from deepagents.graph import create_deep_agent
-    >>>
-    >>> # IMPORTANT: do NOT pass interrupt_on to create_deep_agent when using OpenBox HITL
-    >>> agent = create_deep_agent(model="claude-sonnet-4-5", tools=[my_tool])
-    >>>
-    >>> governed = create_openbox_deep_agent_handler(
-    ...     graph=agent,
+**Middleware (recommended):**
+    >>> from openbox_deepagent import create_openbox_middleware
+    >>> middleware = create_openbox_middleware(
     ...     api_url=os.environ["OPENBOX_URL"],
     ...     api_key=os.environ["OPENBOX_API_KEY"],
-    ...     agent_name="MyDeepAgent",
-    ...     known_subagents=["general-purpose", "researcher"],
+    ...     agent_name="MyBot",
+    ...     known_subagents=["researcher"],
     ... )
-    >>> result = await governed.ainvoke(
-    ...     {"messages": [{"role": "user", "content": "Research LangGraph"}]},
-    ...     config={"configurable": {"thread_id": "session-abc"}},
-    ... )
+    >>> agent = create_deep_agent(model="gpt-4o-mini", middleware=[middleware])
+    >>> result = await agent.ainvoke({"messages": [...]})
+
+**Legacy handler (deprecated):**
+    >>> governed = create_openbox_deep_agent_handler(graph=agent, ...)
+    >>> result = await governed.ainvoke({"messages": [...]})
 """
 
 from importlib.metadata import PackageNotFoundError, version
 
-from openbox_deepagent.deepagent_handler import (
+# NEW: Middleware API (recommended)
+from openbox_deepagent.middleware import OpenBoxMiddleware, OpenBoxMiddlewareOptions
+from openbox_deepagent.middleware_factory import create_openbox_middleware
+
+# Shared utilities
+from openbox_deepagent.subagent_resolver import (
     DEEPAGENT_BUILTIN_TOOLS,
     DEEPAGENT_SUBAGENT_TOOL,
+)
+
+# Legacy handler API (deprecated — kept for backward compat)
+from openbox_deepagent.deepagent_handler import (
     OpenBoxDeepAgentHandler,
     OpenBoxDeepAgentHandlerOptions,
     create_openbox_deep_agent_handler,
@@ -70,12 +72,17 @@ except PackageNotFoundError:
     __version__ = "unknown"
 
 __all__ = [
-    # DeepAgents-specific
+    # NEW: Middleware API
+    "OpenBoxMiddleware",
+    "OpenBoxMiddlewareOptions",
+    "create_openbox_middleware",
+    # Shared
+    "DEEPAGENT_BUILTIN_TOOLS",
+    "DEEPAGENT_SUBAGENT_TOOL",
+    # Legacy handler (deprecated)
     "OpenBoxDeepAgentHandler",
     "OpenBoxDeepAgentHandlerOptions",
     "create_openbox_deep_agent_handler",
-    "DEEPAGENT_BUILTIN_TOOLS",
-    "DEEPAGENT_SUBAGENT_TOOL",
     # Base handler
     "OpenBoxLangGraphHandler",
     "OpenBoxLangGraphHandlerOptions",

@@ -94,16 +94,25 @@ export OPENBOX_URL="https://core.openbox.ai"
 export OPENBOX_API_KEY="obx_live_..."
 ```
 
-### 3. Wrap your DeepAgents graph
+### 3. Add OpenBox middleware to your agent
 
 ```python
 import os
 import asyncio
 from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
-from openbox_deepagent import create_openbox_deep_agent_handler
+from openbox_deepagent import create_openbox_middleware
 
-# Your existing DeepAgents graph — no changes needed
+# Create governance middleware
+middleware = create_openbox_middleware(
+    api_url=os.environ["OPENBOX_URL"],
+    api_key=os.environ["OPENBOX_API_KEY"],
+    agent_name="ResearchBot",       # must match the agent name in your dashboard
+    known_subagents=["researcher", "analyst", "writer", "general-purpose"],
+    tool_type_map={"search_web": "http", "export_data": "http"},
+)
+
+# Inject middleware into your DeepAgents graph — no wrapper needed
 # IMPORTANT: do NOT pass interrupt_on if using OpenBox HITL (see HITL section)
 agent = create_deep_agent(
     model=init_chat_model("openai:gpt-4o-mini", temperature=0),
@@ -114,19 +123,12 @@ agent = create_deep_agent(
         {"name": "writer", "description": "Drafting reports.",
          "system_prompt": "You are a professional writer.", "tools": [write_report]},
     ],
-)
-
-# NOTE: create_openbox_deep_agent_handler is synchronous — do NOT await it
-governed = create_openbox_deep_agent_handler(
-    graph=agent,
-    api_url=os.environ["OPENBOX_URL"],
-    api_key=os.environ["OPENBOX_API_KEY"],
-    agent_name="ResearchBot",       # must match the agent name in your dashboard exactly
-    known_subagents=["researcher", "writer", "general-purpose"],
+    middleware=[middleware],  # <-- governance injected here
 )
 
 async def main():
-    result = await governed.ainvoke(
+    # Invoke directly — no handler wrapper needed
+    result = await agent.ainvoke(
         {"messages": [{"role": "user", "content": "Research recent LangGraph papers"}]},
         config={"configurable": {"thread_id": "session-001"}},
     )
@@ -135,20 +137,7 @@ async def main():
 asyncio.run(main())
 ```
 
-### Run the included test agent
-
-A ready-to-run DeepAgents test agent lives in `sdk-deepagent-python/test-agent`.
-
-```bash
-cd sdk-deepagent-python/test-agent
-cp .env.example .env   # fill in OPENBOX_URL, OPENBOX_API_KEY, OPENAI_API_KEY
-uv run python agent.py
-```
-
-```bash
-OPENBOX_DEBUG=1 uv run python agent.py  # verbose governance logs
-langgraph dev                           # LangGraph Server (handler exported as `graph`)
-```
+> **Migrating from `create_openbox_deep_agent_handler`?** The handler-based approach is deprecated. See [Legacy handler](#legacy-handler-based-approach) below.
 
 ---
 
@@ -654,6 +643,34 @@ This enables two log streams:
 - `subagent_name` is `"general-purpose"` when you expected something else → `subagent_type` was missing from the `task` input; look for a `task tool input missing subagent_type` warning in the debug output
 - A rule is double-triggering → you're missing `not input.hook_trigger` in your Rego
 - Warning at startup about `known_subagents` → you passed an empty list; include at least `["general-purpose"]`
+
+---
+
+## Legacy handler-based approach
+
+> **Deprecated.** Use `create_openbox_middleware()` with `create_deep_agent(middleware=[...])` instead.
+
+The handler-based approach wraps the compiled graph and processes events via `astream_events`:
+
+```python
+from openbox_deepagent import create_openbox_deep_agent_handler
+
+agent = create_deep_agent(model=init_chat_model("openai:gpt-4o-mini"), tools=[...], subagents=[...])
+
+# Deprecated — emits DeprecationWarning
+governed = create_openbox_deep_agent_handler(
+    graph=agent,
+    api_url=os.environ["OPENBOX_URL"],
+    api_key=os.environ["OPENBOX_API_KEY"],
+    agent_name="ResearchBot",
+    known_subagents=["researcher", "analyst", "writer", "general-purpose"],
+)
+
+result = await governed.ainvoke(
+    {"messages": [{"role": "user", "content": "Research LangGraph papers"}]},
+    config={"configurable": {"thread_id": "session-001"}},
+)
+```
 
 ---
 

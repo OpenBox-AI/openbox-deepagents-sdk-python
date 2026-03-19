@@ -30,7 +30,6 @@ What this handler adds on top of openbox-langgraph-sdk
 from __future__ import annotations
 
 import dataclasses
-import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -39,94 +38,18 @@ from openbox_langgraph.langgraph_handler import (
     OpenBoxLangGraphHandlerOptions,
     create_openbox_graph_handler,
 )
-from openbox_langgraph.types import LangGraphStreamEvent
+
+# Shared utilities — used by both this handler and the new OpenBoxMiddleware
+from openbox_deepagent.subagent_resolver import (
+    DEEPAGENT_BUILTIN_TOOLS,
+    DEEPAGENT_SUBAGENT_TOOL,
+    graph_has_interrupt_on as _graph_has_interrupt_on,
+    hitl_enabled as _hitl_enabled,
+    resolve_deepagent_subagent_name as _resolve_deepagent_subagent_name,
+)
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
-
-# ═══════════════════════════════════════════════════════════════════
-# DeepAgents built-in tool names
-# ═══════════════════════════════════════════════════════════════════
-
-DEEPAGENT_BUILTIN_TOOLS: frozenset[str] = frozenset({
-    "write_todos",
-    "ls",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "glob",
-    "grep",
-    "execute",
-    "task",
-})
-
-DEEPAGENT_SUBAGENT_TOOL = "task"
-
-
-# ═══════════════════════════════════════════════════════════════════
-# Subagent name resolver
-# ═══════════════════════════════════════════════════════════════════
-
-def _resolve_deepagent_subagent_name(event: LangGraphStreamEvent) -> str | None:
-    """Detect DeepAgents subagent invocations from the `task` tool's `on_tool_start` event.
-
-    DeepAgents subagents run synchronously inside the `task` tool body — their
-    events are NOT visible in the outer stream. The only observable signal is
-    the `task` tool's `on_tool_start` event, which carries `subagent_type` in
-    its input dict.
-
-    Returns the `subagent_type` string (e.g. `"weather"`, `"general-purpose"`),
-    or None for all other events.
-    """
-    if event.event != "on_tool_start":
-        return None
-    if event.name != DEEPAGENT_SUBAGENT_TOOL:
-        return None
-
-    raw_input = event.data.get("input")
-    if isinstance(raw_input, dict):
-        subagent_type = raw_input.get("subagent_type")
-        if isinstance(subagent_type, str):
-            return subagent_type
-
-    # Fallback: DeepAgents default is general-purpose
-    if sys.stderr and __import__("os").environ.get("OPENBOX_DEBUG"):
-        sys.stderr.write(
-            f"[OpenBox Debug] task tool input missing subagent_type, "
-            f"defaulting to general-purpose. raw_input={raw_input!r}\n"
-        )
-    return "general-purpose"
-
-
-# ═══════════════════════════════════════════════════════════════════
-# interrupt_on conflict detection
-# ═══════════════════════════════════════════════════════════════════
-
-def _hitl_enabled(hitl: Any) -> bool:
-    """Return True if the HITL config indicates polling is enabled."""
-    if hitl is None:
-        return False
-    if isinstance(hitl, dict):
-        return bool(hitl.get("enabled", False))
-    return bool(getattr(hitl, "enabled", False))
-
-
-def _graph_has_interrupt_on(graph: Any) -> bool:
-    """Check whether the compiled graph has interrupt_before or interrupt_after configured.
-
-    DeepAgents HumanInTheLoopMiddleware sets these on the compiled graph.
-    This is a best-effort check — false negatives are possible for custom setups.
-
-    Args:
-        graph: A compiled LangGraph graph object.
-    """
-    interrupt_before = getattr(graph, "interrupt_before", None) or getattr(graph, "interruptBefore", None)
-    interrupt_after = getattr(graph, "interrupt_after", None) or getattr(graph, "interruptAfter", None)
-    if isinstance(interrupt_before, (list, tuple, set)) and len(interrupt_before) > 0:
-        return True
-    if isinstance(interrupt_after, (list, tuple, set)) and len(interrupt_after) > 0:
-        return True
-    return False
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -249,6 +172,9 @@ def create_openbox_deep_agent_handler(
 ) -> OpenBoxDeepAgentHandler:
     """Create a fully configured `OpenBoxDeepAgentHandler` for a DeepAgents graph.
 
+    .. deprecated::
+        Use :func:`create_openbox_middleware` with ``create_deep_agent(middleware=[...])`` instead.
+
     Validates the API key and sets up global config before returning the handler.
 
     IMPORTANT: Do NOT pass `interrupt_on` to `create_deep_agent` when using OpenBox
@@ -282,6 +208,14 @@ def create_openbox_deep_agent_handler(
         ...     hitl={"enabled": True, "poll_interval_ms": 5000, "max_wait_ms": 300000},
         ... )
     """
+    import warnings
+    warnings.warn(
+        "create_openbox_deep_agent_handler is deprecated. "
+        "Use create_openbox_middleware() with create_deep_agent(middleware=[...]) instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     from openbox_langgraph.config import initialize
     initialize(
         api_url=api_url,
