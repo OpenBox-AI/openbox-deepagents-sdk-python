@@ -17,6 +17,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, TYPE_CHECKING
@@ -129,7 +130,8 @@ class OpenBoxMiddleware(AgentMiddleware):
 
         self._known_subagents: frozenset[str] = frozenset(opts.known_subagents)
 
-        # Per-invocation state (reset in abefore_agent)
+        # Per-invocation state (reset in before_agent/abefore_agent)
+        self._sync_mode: bool = False
         self._workflow_id: str = ""
         self._run_id: str = ""
         self._thread_id: str = ""
@@ -178,11 +180,154 @@ class OpenBoxMiddleware(AgentMiddleware):
         return sorted(self._known_subagents)
 
     # ─────────────────────────────────────────────────────────────
-    # Async middleware hooks — delegate to middleware_hooks module
+    # Async-to-sync bridge
+    # ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _run_async(coro):
+        """Run an async coroutine from sync context.
+
+        When LangGraph calls sync hooks from inside its event loop,
+        we must run in a thread pool. We copy the OTel context into
+        the thread so span propagation works correctly.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
+            # Inside LangGraph's event loop — run in thread with OTel context
+            import concurrent.futures
+            from opentelemetry import context as otel_context
+            ctx = otel_context.get_current()
+
+            def _run_with_ctx():
+                token = otel_context.attach(ctx)
+                try:
+                    return asyncio.run(coro)
+                finally:
+                    try:
+                        otel_context.detach(token)
+                    except Exception:
+                        pass
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(_run_with_ctx).result()
+        return asyncio.run(coro)
+
+    # ─────────────────────────────────────────────────────────────
+    # Sync middleware hooks — for invoke()/stream() callers
+    # ─────────────────────────────────────────────────────────────
+
+    def before_agent(self, state, runtime) -> dict[str, Any] | None:
+        """Sync session setup: delegates to async via _run_async."""
+        self._sync_mode = True
+        if self._span_processor:
+            self._span_processor.set_sync_mode(True)
+        from openbox_deepagent.middleware_hooks import handle_before_agent
+        return self._run_async(handle_before_agent(self, state, runtime))
+
+    def after_agent(self, state, runtime) -> dict[str, Any] | None:
+        """Sync session close: send WorkflowCompleted via sync httpx."""
+        from openbox_deepagent.middleware_hooks import handle_after_agent
+        self._run_async(handle_after_agent(self, state, runtime))
+        return None
+
+    def wrap_model_call(self, request: ModelRequest, handler) -> Any:
+        """Sync LLM governance with direct OTel span in current thread.
+
+        Creates OTel span and registers trace_id in the sync thread so httpx
+        hooks can find the activity context (avoids asyncio.run ContextVar
+        fragmentation).
+        """
+        from openbox_deepagent.middleware_hooks import handle_wrap_model_call
+        from opentelemetry import context as otel_ctx, trace as otel_tr
+
+        # Create OTel span in sync thread for httpx hook visibility
+        tracer = otel_tr.get_tracer("openbox-deepagent")
+        span = tracer.start_span("llm.call.sync", kind=otel_tr.SpanKind.INTERNAL)
+        token = otel_ctx.attach(otel_tr.set_span_in_context(span))
+        trace_id = span.get_span_context().trace_id
+        activity_id = None
+
+        try:
+            # Run the async governance handler — it will register its own
+            # trace_id via _run_with_otel_context, but we also register the
+            # sync thread's trace_id so httpx sync hooks can find it
+            async def async_handler(req):
+                return handler(req)
+
+            async def _wrapped():
+                nonlocal activity_id
+                # Import here to get the activity_id from the handler
+                import uuid
+                activity_id = str(uuid.uuid4())
+                if self._span_processor and trace_id:
+                    self._span_processor.register_trace(trace_id, self._workflow_id, activity_id)
+                    self._span_processor.set_activity_context(self._workflow_id, activity_id, {
+                        "source": "workflow-telemetry",
+                        "workflow_id": self._workflow_id,
+                        "run_id": self._run_id,
+                        "event_type": "ActivityStarted",
+                        "activity_id": activity_id,
+                        "activity_type": "llm_call",
+                    })
+                return await handle_wrap_model_call(self, request, async_handler)
+
+            return self._run_async(_wrapped())
+        finally:
+            span.end()
+            try:
+                otel_ctx.detach(token)
+            except Exception:
+                pass
+
+    def wrap_tool_call(self, request: ToolCallRequest, handler) -> Any:
+        """Sync tool governance with direct OTel span in current thread."""
+        from openbox_deepagent.middleware_hooks import handle_wrap_tool_call
+        from opentelemetry import context as otel_ctx, trace as otel_tr
+
+        tracer = otel_tr.get_tracer("openbox-deepagent")
+        tool_name = request.tool_call.get("name", "tool") if hasattr(request, "tool_call") else "tool"
+        span = tracer.start_span(f"tool.{tool_name}.sync", kind=otel_tr.SpanKind.INTERNAL)
+        token = otel_ctx.attach(otel_tr.set_span_in_context(span))
+        trace_id = span.get_span_context().trace_id
+
+        try:
+            async def async_handler(req):
+                return handler(req)
+
+            # Register sync thread trace_id before running handler
+            if self._span_processor and trace_id:
+                import uuid
+                sync_activity_id = str(uuid.uuid4())
+                self._span_processor.register_trace(trace_id, self._workflow_id, sync_activity_id)
+                self._span_processor.set_activity_context(self._workflow_id, sync_activity_id, {
+                    "source": "workflow-telemetry",
+                    "workflow_id": self._workflow_id,
+                    "run_id": self._run_id,
+                    "event_type": "ActivityStarted",
+                    "activity_id": sync_activity_id,
+                    "activity_type": tool_name,
+                })
+
+            return self._run_async(handle_wrap_tool_call(self, request, async_handler))
+        finally:
+            span.end()
+            try:
+                otel_ctx.detach(token)
+            except Exception:
+                pass
+
+    # ─────────────────────────────────────────────────────────────
+    # Async middleware hooks — for ainvoke()/astream() callers
     # ─────────────────────────────────────────────────────────────
 
     async def abefore_agent(self, state, runtime) -> dict[str, Any] | None:
         """Session setup: WorkflowStarted + SignalReceived + pre-screen guardrails."""
+        self._sync_mode = False
+        if self._span_processor:
+            self._span_processor.set_sync_mode(False)
         from openbox_deepagent.middleware_hooks import handle_before_agent
         return await handle_before_agent(self, state, runtime)
 

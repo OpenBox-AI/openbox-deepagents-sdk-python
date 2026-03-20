@@ -46,6 +46,19 @@ if TYPE_CHECKING:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Helper: evaluate event (sync or async based on mode)
+# ═══════════════════════════════════════════════════════════════════
+
+async def _evaluate(mw: OpenBoxMiddleware, event: Any) -> Any:
+    """Send governance event using sync httpx.Client when in sync mode,
+    async httpx.AsyncClient otherwise. Prevents context cancellation
+    caused by asyncio.run() teardown in sync-to-async bridge."""
+    if mw._sync_mode:
+        return mw._client.evaluate_event_sync(event)
+    return await mw._client.evaluate_event(event)
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Helper: build base governance event fields
 # ═══════════════════════════════════════════════════════════════════
 
@@ -243,7 +256,7 @@ async def handle_before_agent(mw: OpenBoxMiddleware, state: Any, runtime: Any) -
     # 1. Extract thread_id and generate fresh session IDs
     config = getattr(runtime, "config", None) or {}
     configurable = config.get("configurable", {}) if isinstance(config, dict) else {}
-    mw._thread_id = configurable.get("thread_id", "default")
+    mw._thread_id = configurable.get("thread_id", "deepagents")
     _turn = uuid.uuid4().hex
     mw._workflow_id = f"{mw._thread_id}-{_turn[:8]}"
     mw._run_id = f"{mw._thread_id}-run-{_turn[8:16]}"
@@ -264,7 +277,7 @@ async def handle_before_agent(mw: OpenBoxMiddleware, state: Any, runtime: Any) -
             signal_name="user_prompt",
             signal_args=[user_prompt],
         )
-        await mw._client.evaluate_event(sig_event)
+        await _evaluate(mw,sig_event)
 
     # 3. WorkflowStarted
     if mw._config.send_chain_start_event:
@@ -275,7 +288,7 @@ async def handle_before_agent(mw: OpenBoxMiddleware, state: Any, runtime: Any) -
             activity_type=mw._config.agent_name or "LangGraphRun",
             activity_input=[safe_serialize(state)],
         )
-        await mw._client.evaluate_event(wf_event)
+        await _evaluate(mw,wf_event)
 
     # 4. Pre-screen LLMStarted (guardrails on user prompt)
     if mw._config.send_llm_start_event and user_prompt and user_prompt.strip():
@@ -287,7 +300,7 @@ async def handle_before_agent(mw: OpenBoxMiddleware, state: Any, runtime: Any) -
             activity_input=[{"prompt": user_prompt}],
             prompt=user_prompt,
         )
-        response = await mw._client.evaluate_event(gov)
+        response = await _evaluate(mw,gov)
 
         if response is not None:
             # Enforce — BLOCK/HALT raises immediately
@@ -307,7 +320,7 @@ async def handle_before_agent(mw: OpenBoxMiddleware, state: Any, runtime: Any) -
                     status="failed",
                     error=str(enforcement_error),
                 )
-                await mw._client.evaluate_event(wf_end)
+                await _evaluate(mw,wf_end)
                 raise enforcement_error
 
             # HITL polling if needed
@@ -357,7 +370,7 @@ async def handle_after_agent(mw: OpenBoxMiddleware, state: Any, runtime: Any) ->
             workflow_output=safe_serialize({"result": last_content}),
             status="completed",
         )
-        await mw._client.evaluate_event(wf_event)
+        await _evaluate(mw,wf_event)
 
     # Cleanup SpanProcessor state
     if mw._span_processor:
@@ -404,7 +417,7 @@ async def handle_wrap_model_call(mw: OpenBoxMiddleware, request: Any, handler: A
                 llm_model=model_name,
                 prompt=prompt_text,
             )
-            response = await mw._client.evaluate_event(gov)
+            response = await _evaluate(mw,gov)
         else:
             response = None
 
@@ -450,7 +463,7 @@ async def handle_wrap_model_call(mw: OpenBoxMiddleware, request: Any, handler: A
             completion=meta.get("completion"),
         )
         _logger.warning("[DIAG] LLMCompleted SENDING: activity_id=%s-c", activity_id)
-        resp = await mw._client.evaluate_event(completed)
+        resp = await _evaluate(mw,completed)
         _logger.debug("[OpenBox] LLMCompleted SENT: activity_id=%s-c resp=%s", activity_id, resp)
         if resp is not None:
             enforce_verdict(resp, "llm_end")
@@ -519,7 +532,7 @@ async def handle_wrap_tool_call(mw: OpenBoxMiddleware, request: Any, handler: An
             tool_input=safe_serialize(tool_args),
             subagent_name=subagent_name,
         )
-        response = await mw._client.evaluate_event(gov)
+        response = await _evaluate(mw,gov)
         if response is not None:
             result = enforce_verdict(response, "tool_start")
             if result.requires_hitl and mw._config.hitl.enabled:
@@ -568,7 +581,7 @@ async def handle_wrap_tool_call(mw: OpenBoxMiddleware, request: Any, handler: An
                 status="failed",
                 duration_ms=duration_ms,
             )
-            await mw._client.evaluate_event(failed_event)
+            await _evaluate(mw,failed_event)
         raise
     duration_ms = (time.monotonic() - start) * 1000
     _logger.debug("[OpenBox] wrap_tool_call AFTER: tool=%s activity_id=%s duration=%.0fms send_tool_end=%s",
@@ -604,7 +617,7 @@ async def handle_wrap_tool_call(mw: OpenBoxMiddleware, request: Any, handler: An
             duration_ms=duration_ms,
         )
         _logger.debug("[OpenBox] ToolCompleted SENDING: tool=%s activity_id=%s-c", tool_name, activity_id)
-        resp = await mw._client.evaluate_event(completed)
+        resp = await _evaluate(mw,completed)
         _logger.debug("[OpenBox] ToolCompleted SENT: tool=%s activity_id=%s-c resp=%s", tool_name, activity_id, resp)
         if resp is not None:
             result = enforce_verdict(resp, "tool_end")
