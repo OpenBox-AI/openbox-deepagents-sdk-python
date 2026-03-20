@@ -119,6 +119,7 @@ class OpenBoxMiddleware(AgentMiddleware):
                 ignored_urls=[gc.api_url],
                 api_timeout=gc.governance_timeout,
                 on_api_error=self._config.on_api_error,
+                instrument_file_io=True,
             )
             # Suppress harmless OTel context detach errors from asyncio.Task
             # boundaries in LangGraph — the token was attached in one task
