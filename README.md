@@ -1,14 +1,14 @@
-# openbox-deepagent
+# openbox-deepagents
 
-[![PyPI](https://img.shields.io/pypi/v/openbox-deepagent)](https://pypi.org/project/openbox-deepagent/)
-[![Python](https://img.shields.io/pypi/pyversions/openbox-deepagent)](https://pypi.org/project/openbox-deepagent/)
+[![PyPI](https://img.shields.io/pypi/v/openbox-deepagents)](https://pypi.org/project/openbox-deepagents/)
+[![Python](https://img.shields.io/pypi/pyversions/openbox-deepagents)](https://pypi.org/project/openbox-deepagents/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Add real-time governance to any [DeepAgents](https://github.com/langchain-ai/deepagents) application — powered by [OpenBox](https://openbox.ai).
 
-This package extends [`openbox-langgraph-sdk`](../sdk-langgraph-python) with three things DeepAgents specifically needs: **per-subagent policy targeting** (govern the `writer` subagent differently from `researcher`), **HITL conflict detection** (prevent clashes with DeepAgents' own `interrupt_on`), and **built-in `a2a` tool classification** for subagent dispatches.
+This package extends [`openbox-langgraph-sdk`](https://github.com/OpenBox-AI/openbox-langgraph-sdk-python) with three things DeepAgents specifically needs: **per-subagent policy targeting** (govern the `writer` subagent differently from `researcher`), **HITL conflict detection** (prevent clashes with DeepAgents' own `interrupt_on`), and **built-in `a2a` tool classification** for subagent dispatches.
 
-> **New to OpenBox?** Start with the [`openbox-langgraph-sdk` README](../sdk-langgraph-python/README.md). It covers policies, guardrails, HITL, error handling, and debugging. This document covers only what's different or additional for DeepAgents.
+> **New to OpenBox?** Start with the [`openbox-langgraph-sdk` README](https://github.com/OpenBox-AI/openbox-langgraph-sdk-python/blob/main/README.md). It covers policies, guardrails, HITL, error handling, and debugging. This document covers only what's different or additional for DeepAgents.
 
 ---
 
@@ -74,7 +74,7 @@ Your graph code is untouched.
 ## Installation
 
 ```bash
-pip install openbox-deepagent
+pip install openbox-deepagents
 ```
 
 **Requirements:** Python 3.11+, `openbox-langgraph-sdk >= 0.1.0`, `langgraph >= 0.2`, `deepagents`
@@ -85,7 +85,7 @@ pip install openbox-deepagent
 
 ### 1. Create an agent in the dashboard
 
-Sign in to [dashboard.openbox.ai](https://dashboard.openbox.ai), create an agent named `"ResearchBot"`, and copy your API key.
+Sign in to [platform.openbox.ai](https://platform.openbox.ai), create an agent named `"ResearchBot"`, and copy your API key.
 
 ### 2. Export credentials
 
@@ -137,10 +137,10 @@ asyncio.run(main())
 
 ### Run the included test agent
 
-A ready-to-run DeepAgents test agent lives in `sdk-deepagent-python/test-agent`.
+A ready-to-run DeepAgents test agent lives in `sdk-deepagents-sdk-python/test-agent`.
 
 ```bash
-cd sdk-deepagent-python/test-agent
+cd sdk-deepagents-sdk-python/test-agent
 cp .env.example .env   # fill in OPENBOX_URL, OPENBOX_API_KEY, OPENAI_API_KEY
 uv run python agent.py
 ```
@@ -564,7 +564,7 @@ Run with `OPENBOX_DEBUG=1` and look for `[OBX_EVENT]` lines to find the exact no
 
 ## Known limitations
 
-These constraints come from how DeepAgents and LangGraph work at runtime. The base limitations (Behavior Rules, `httpx`-only spans, `ainvoke` session scoping) are covered in the [openbox-langgraph-sdk README](../sdk-langgraph-python/README.md#known-limitations). These are the DeepAgents-specific additions.
+These constraints come from how DeepAgents and LangGraph work at runtime. The base limitations (Behavior Rules, `httpx`-only spans, `ainvoke` session scoping) are covered in the [openbox-langgraph-sdk README](https://github.com/OpenBox-AI/openbox-langgraph-sdk-python/blob/main/README.md#known-limitations). These are the DeepAgents-specific additions.
 
 ### Subagent internals are invisible to governance
 
@@ -662,8 +662,8 @@ This enables two log streams:
 Contributions are welcome! Please open an issue before submitting a large pull request.
 
 ```bash
-git clone https://github.com/openbox-ai/openbox-langchain-sdk
-cd sdk-deepagent-python
+git clone https://github.com/OpenBox-AI/openbox-deepagents-sdk-python
+cd openbox-deepagents-sdk-python
 uv sync --extra dev
 uv run pytest tests/ -v
 ```
