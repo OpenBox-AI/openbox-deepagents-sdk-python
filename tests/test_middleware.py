@@ -12,6 +12,7 @@ from openbox_deepagent.middleware_hooks import (
     _extract_last_user_message,
     _extract_prompt_from_messages,
     _extract_response_metadata,
+    _run_with_otel_context,
     handle_after_agent,
     handle_before_agent,
     handle_wrap_model_call,
@@ -501,3 +502,98 @@ class TestFactory:
             )
             assert isinstance(mw, OpenBoxMiddleware)
             assert mw.get_known_subagents() == ["researcher"]
+
+
+# ═══════════════════════════════════════════════════════════════════
+# OTel context propagation tests
+# ═══════════════════════════════════════════════════════════════════
+
+class TestOtelContextPropagation:
+    """Verify OTel trace context bridges asyncio.Task boundaries."""
+
+    @pytest.mark.asyncio
+    async def test_run_with_otel_context_creates_span(self, middleware):
+        """_run_with_otel_context creates an explicit child span."""
+        middleware._workflow_id = "wf-otel"
+        handler = AsyncMock(return_value="result")
+        request = MagicMock()
+
+        with patch("openbox_deepagent.middleware_hooks._tracer") as mock_tracer, \
+             patch("openbox_deepagent.middleware_hooks.otel_context") as mock_ctx, \
+             patch("openbox_deepagent.middleware_hooks.otel_trace") as mock_trace:
+            mock_span = MagicMock()
+            mock_span.get_span_context.return_value.trace_id = 12345
+            mock_tracer.start_span.return_value = mock_span
+            mock_ctx.get_current.return_value = "parent_ctx"
+            mock_trace.set_span_in_context.return_value = "span_ctx"
+
+            result = await _run_with_otel_context(
+                middleware, "tool.search_web", "act-1", handler, request,
+            )
+
+            assert result == "result"
+            mock_tracer.start_span.assert_called_once()
+            call_kwargs = mock_tracer.start_span.call_args
+            assert call_kwargs[0][0] == "tool.search_web"
+            assert call_kwargs[1]["context"] == "parent_ctx"
+            mock_span.end.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_with_otel_context_registers_trace(self, middleware):
+        """Span's trace_id is registered with SpanProcessor."""
+        middleware._workflow_id = "wf-otel"
+        handler = AsyncMock(return_value="ok")
+
+        with patch("openbox_deepagent.middleware_hooks._tracer") as mock_tracer, \
+             patch("openbox_deepagent.middleware_hooks.otel_context"), \
+             patch("openbox_deepagent.middleware_hooks.otel_trace"):
+            mock_span = MagicMock()
+            mock_span.get_span_context.return_value.trace_id = 99999
+            mock_tracer.start_span.return_value = mock_span
+
+            await _run_with_otel_context(
+                middleware, "llm.call", "act-2", handler, MagicMock(),
+            )
+
+            middleware._span_processor.register_trace.assert_called_once_with(
+                99999, "wf-otel", "act-2",
+            )
+
+    @pytest.mark.asyncio
+    async def test_wrap_tool_call_uses_otel_span(self, middleware):
+        """handle_wrap_tool_call delegates to _run_with_otel_context."""
+        middleware._workflow_id = "wf-1"
+        middleware._run_id = "run-1"
+        tool_handler = AsyncMock(return_value=MagicMock(content="results"))
+        tool_request = MagicMock()
+        tool_request.tool_call = {"name": "search_web", "args": {"q": "test"}, "id": "c1"}
+
+        with patch("openbox_deepagent.middleware_hooks._run_with_otel_context",
+                    new_callable=AsyncMock, return_value=tool_handler.return_value) as mock_otel:
+            await handle_wrap_tool_call(middleware, tool_request, tool_handler)
+            mock_otel.assert_called_once()
+            assert mock_otel.call_args[0][1].startswith("tool.")
+
+    @pytest.mark.asyncio
+    async def test_wrap_model_call_uses_otel_span(self, middleware):
+        """handle_wrap_model_call delegates to _run_with_otel_context."""
+        middleware._workflow_id = "wf-1"
+        middleware._run_id = "run-1"
+        middleware._first_llm_call = False
+        middleware._pre_screen_response = None
+
+        model_response = MagicMock()
+        model_response.message = MagicMock(
+            content="AI answer", response_metadata={"model_name": "gpt-4o"},
+            usage_metadata={"input_tokens": 5, "output_tokens": 10}, tool_calls=[],
+        )
+        model_handler = AsyncMock(return_value=model_response)
+        model_request = MagicMock()
+        model_request.messages = [MagicMock(type="human", content="What is AI?")]
+        model_request.model = MagicMock(__str__=lambda self: "gpt-4o")
+
+        with patch("openbox_deepagent.middleware_hooks._run_with_otel_context",
+                    new_callable=AsyncMock, return_value=model_response) as mock_otel:
+            await handle_wrap_model_call(middleware, model_request, model_handler)
+            mock_otel.assert_called_once()
+            assert mock_otel.call_args[0][1] == "llm.call"

@@ -13,6 +13,13 @@ import time
 import uuid
 from typing import Any, TYPE_CHECKING
 
+import logging
+
+from opentelemetry import context as otel_context, trace as otel_trace
+
+_tracer = otel_trace.get_tracer("openbox-deepagent")
+_logger = logging.getLogger(__name__)
+
 from openbox_langgraph.errors import (
     ApprovalExpiredError,
     ApprovalRejectedError,
@@ -182,6 +189,46 @@ def _extract_response_metadata(response: Any) -> dict[str, Any]:
     result["has_tool_calls"] = bool(tool_calls)
 
     return result
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Helper: OTel context propagation across asyncio.Task boundaries
+# ═══════════════════════════════════════════════════════════════════
+
+async def _run_with_otel_context(
+    mw: OpenBoxMiddleware,
+    span_name: str,
+    activity_id: str,
+    handler: Any,
+    request: Any,
+) -> Any:
+    """Execute handler inside an explicit OTel span to propagate trace context.
+
+    LangGraph spawns asyncio.Tasks for tool/LLM execution. OTel trace context
+    breaks at Task boundaries — child spans get new trace_ids.
+
+    We manually manage attach/detach instead of using `start_as_current_span`
+    context manager because the `await handler(request)` may cross asyncio Task
+    boundaries, causing the detach token to be invalid in the new Task context.
+    The detach error is harmless but noisy — suppressing it here.
+    """
+    parent_ctx = otel_context.get_current()
+    span = _tracer.start_span(span_name, context=parent_ctx, kind=otel_trace.SpanKind.INTERNAL)
+    token = otel_context.attach(otel_trace.set_span_in_context(span, parent_ctx))
+
+    trace_id = span.get_span_context().trace_id
+    if mw._span_processor and trace_id:
+        mw._span_processor.register_trace(trace_id, mw._workflow_id, activity_id)
+
+    try:
+        result = await handler(request)
+        return result
+    finally:
+        span.end()
+        try:
+            otel_context.detach(token)
+        except Exception:
+            pass  # Token created in different asyncio context — safe to ignore
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -376,12 +423,15 @@ async def handle_wrap_model_call(mw: OpenBoxMiddleware, request: Any, handler: A
             "activity_type": "llm_call",
         })
 
-    # 6. Execute model call
+    # 6. Execute model call (OTel span bridges asyncio.Task boundary)
     start = time.monotonic()
-    model_response = await handler(request)
+    model_response = await _run_with_otel_context(
+        mw, "llm.call", activity_id, handler, request,
+    )
     duration_ms = (time.monotonic() - start) * 1000
 
     # 7. Send LLMCompleted
+    _logger.warning("[DIAG] wrap_model_call AFTER: activity_id=%s duration=%.0fms send_llm_end=%s", activity_id, duration_ms, mw._config.send_llm_end_event)
     if mw._config.send_llm_end_event:
         meta = _extract_response_metadata(model_response)
         completed = LangChainGovernanceEvent(
@@ -399,7 +449,9 @@ async def handle_wrap_model_call(mw: OpenBoxMiddleware, request: Any, handler: A
             has_tool_calls=meta.get("has_tool_calls"),
             completion=meta.get("completion"),
         )
+        _logger.warning("[DIAG] LLMCompleted SENDING: activity_id=%s-c", activity_id)
         resp = await mw._client.evaluate_event(completed)
+        _logger.debug("[OpenBox] LLMCompleted SENT: activity_id=%s-c resp=%s", activity_id, resp)
         if resp is not None:
             enforce_verdict(resp, "llm_end")
 
@@ -451,18 +503,10 @@ async def handle_wrap_tool_call(mw: OpenBoxMiddleware, request: Any, handler: An
             "activity_type": tool_name,
         }
         mw._span_processor.set_activity_context(mw._workflow_id, activity_id, activity_context)
-        # Register OTel trace_id mapping
-        try:
-            from opentelemetry import trace as _otel_trace
-            current_span = _otel_trace.get_current_span()
-            if current_span and hasattr(current_span, "get_span_context"):
-                trace_id = current_span.get_span_context().trace_id
-                if trace_id:
-                    mw._span_processor.register_trace(trace_id, mw._workflow_id, activity_id)
-        except ImportError:
-            pass
 
     # 5. Send ToolStarted + enforce verdict
+    _logger.debug("[OpenBox] ToolStarted SENDING: tool=%s activity_id=%s tool_type=%s subagent=%s",
+                  tool_name, activity_id, tool_type, subagent_name)
     if mw._config.send_tool_start_event:
         gov = LangChainGovernanceEvent(
             **base,
@@ -497,17 +541,38 @@ async def handle_wrap_tool_call(mw: OpenBoxMiddleware, request: Any, handler: An
                             mw._span_processor.clear_activity_context(mw._workflow_id, activity_id)
                         raise GovernanceHaltError(str(e)) from e
 
-    # === TOOL CALL (OTel captures HTTP/DB/file spans) ===
+    # === TOOL CALL (OTel span bridges asyncio.Task boundary) ===
 
     start = time.monotonic()
     try:
-        tool_result = await handler(request)
-    except Exception:
+        tool_result = await _run_with_otel_context(
+            mw, f"tool.{tool_name}", activity_id, handler, request,
+        )
+    except Exception as exc:
+        _logger.warning("[OpenBox] wrap_tool_call EXCEPTION: tool=%s activity_id=%s error=%s", tool_name, activity_id, exc)
+        duration_ms = (time.monotonic() - start) * 1000
         # Clear SpanProcessor on error
         if mw._span_processor:
             mw._span_processor.clear_activity_context(mw._workflow_id, activity_id)
+        # Send ToolCompleted(failed) so Core closes the activity row
+        if mw._config.send_tool_end_event:
+            failed_event = LangChainGovernanceEvent(
+                **_base_event_fields(mw),
+                event_type="ToolCompleted",
+                activity_id=f"{activity_id}-c",
+                activity_type=tool_name,
+                activity_output=safe_serialize({"error": str(exc)}),
+                tool_name=tool_name,
+                tool_type=tool_type,
+                subagent_name=subagent_name,
+                status="failed",
+                duration_ms=duration_ms,
+            )
+            await mw._client.evaluate_event(failed_event)
         raise
     duration_ms = (time.monotonic() - start) * 1000
+    _logger.debug("[OpenBox] wrap_tool_call AFTER: tool=%s activity_id=%s duration=%.0fms send_tool_end=%s",
+                  tool_name, activity_id, duration_ms, mw._config.send_tool_end_event)
 
     # === AFTER TOOL CALL ===
 
@@ -516,12 +581,16 @@ async def handle_wrap_tool_call(mw: OpenBoxMiddleware, request: Any, handler: An
         mw._span_processor.clear_activity_context(mw._workflow_id, activity_id)
 
     # 7. Send ToolCompleted + enforce verdict
+    _logger.debug("[OpenBox] ToolCompleted PREPARING: tool=%s activity_id=%s-c", tool_name, activity_id)
     if mw._config.send_tool_end_event:
-        serialized_output = (
-            safe_serialize({"result": tool_result})
-            if isinstance(tool_result, str)
-            else safe_serialize(tool_result)
-        )
+        try:
+            serialized_output = (
+                safe_serialize({"result": tool_result})
+                if isinstance(tool_result, str)
+                else safe_serialize(tool_result)
+            )
+        except Exception:
+            serialized_output = {"result": str(tool_result)}
         completed = LangChainGovernanceEvent(
             **_base_event_fields(mw),
             event_type="ToolCompleted",
@@ -534,7 +603,9 @@ async def handle_wrap_tool_call(mw: OpenBoxMiddleware, request: Any, handler: An
             status="completed",
             duration_ms=duration_ms,
         )
+        _logger.debug("[OpenBox] ToolCompleted SENDING: tool=%s activity_id=%s-c", tool_name, activity_id)
         resp = await mw._client.evaluate_event(completed)
+        _logger.debug("[OpenBox] ToolCompleted SENT: tool=%s activity_id=%s-c resp=%s", tool_name, activity_id, resp)
         if resp is not None:
             result = enforce_verdict(resp, "tool_end")
             if result.requires_hitl and mw._config.hitl.enabled:
