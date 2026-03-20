@@ -120,6 +120,10 @@ class OpenBoxMiddleware(AgentMiddleware):
                 api_timeout=gc.governance_timeout,
                 on_api_error=self._config.on_api_error,
             )
+            # Suppress harmless OTel context detach errors from asyncio.Task
+            # boundaries in LangGraph — the token was attached in one task
+            # but detached in another, which ContextVar rejects.
+            logging.getLogger("opentelemetry.context").setLevel(logging.CRITICAL)
             _logger.debug("[OpenBox] OTel HTTP governance hooks enabled (middleware)")
 
         self._known_subagents: frozenset[str] = frozenset(opts.known_subagents)

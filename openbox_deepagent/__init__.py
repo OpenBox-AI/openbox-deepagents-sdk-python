@@ -1,9 +1,7 @@
 """
 OpenBox DeepAgents SDK — governance middleware for DeepAgents graphs.
 
-Provides two integration approaches:
-
-**Middleware (recommended):**
+Usage:
     >>> from openbox_deepagent import create_openbox_middleware
     >>> middleware = create_openbox_middleware(
     ...     api_url=os.environ["OPENBOX_URL"],
@@ -13,32 +11,19 @@ Provides two integration approaches:
     ... )
     >>> agent = create_deep_agent(model="gpt-4o-mini", middleware=[middleware])
     >>> result = await agent.ainvoke({"messages": [...]})
-
-**Legacy handler (deprecated):**
-    >>> governed = create_openbox_deep_agent_handler(graph=agent, ...)
-    >>> result = await governed.ainvoke({"messages": [...]})
 """
 
 from importlib.metadata import PackageNotFoundError, version
 
-# NEW: Middleware API (recommended)
 from openbox_deepagent.middleware import OpenBoxMiddleware, OpenBoxMiddlewareOptions
 from openbox_deepagent.middleware_factory import create_openbox_middleware
 
-# Shared utilities
 from openbox_deepagent.subagent_resolver import (
     DEEPAGENT_BUILTIN_TOOLS,
     DEEPAGENT_SUBAGENT_TOOL,
 )
 
-# Legacy handler API (deprecated — kept for backward compat)
-from openbox_deepagent.deepagent_handler import (
-    OpenBoxDeepAgentHandler,
-    OpenBoxDeepAgentHandlerOptions,
-    create_openbox_deep_agent_handler,
-)
-
-# Re-export the openbox-langgraph-sdk public surface explicitly
+# Re-export the openbox-langgraph-sdk public surface
 from openbox_langgraph import (
     ApprovalExpiredError,
     ApprovalRejectedError,
@@ -72,17 +57,13 @@ except PackageNotFoundError:
     __version__ = "unknown"
 
 __all__ = [
-    # NEW: Middleware API
+    # Middleware API
     "OpenBoxMiddleware",
     "OpenBoxMiddlewareOptions",
     "create_openbox_middleware",
     # Shared
     "DEEPAGENT_BUILTIN_TOOLS",
     "DEEPAGENT_SUBAGENT_TOOL",
-    # Legacy handler (deprecated)
-    "OpenBoxDeepAgentHandler",
-    "OpenBoxDeepAgentHandlerOptions",
-    "create_openbox_deep_agent_handler",
     # Base handler
     "OpenBoxLangGraphHandler",
     "OpenBoxLangGraphHandlerOptions",
