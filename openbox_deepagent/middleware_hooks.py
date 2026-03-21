@@ -324,7 +324,7 @@ async def handle_before_agent(mw: OpenBoxMiddleware, state: Any, runtime: Any) -
                 raise enforcement_error
 
             # HITL polling if needed
-            if result and result.requires_hitl and mw._config.hitl.enabled:
+            if result and result.requires_hitl:
                 try:
                     await poll_until_decision(
                         mw._client,
@@ -535,7 +535,7 @@ async def handle_wrap_tool_call(mw: OpenBoxMiddleware, request: Any, handler: An
         response = await _evaluate(mw,gov)
         if response is not None:
             result = enforce_verdict(response, "tool_start")
-            if result.requires_hitl and mw._config.hitl.enabled:
+            if result.requires_hitl:
                 if tool_name not in (mw._config.hitl.skip_tool_types or set()):
                     try:
                         await poll_until_decision(
@@ -621,7 +621,7 @@ async def handle_wrap_tool_call(mw: OpenBoxMiddleware, request: Any, handler: An
         _logger.debug("[OpenBox] ToolCompleted SENT: tool=%s activity_id=%s-c resp=%s", tool_name, activity_id, resp)
         if resp is not None:
             result = enforce_verdict(resp, "tool_end")
-            if result.requires_hitl and mw._config.hitl.enabled:
+            if result.requires_hitl:
                 if tool_name not in (mw._config.hitl.skip_tool_types or set()):
                     try:
                         await poll_until_decision(
