@@ -53,7 +53,6 @@ class OpenBoxMiddlewareOptions:
     known_subagents: list[str] = field(default_factory=lambda: ["general-purpose"])
     tool_type_map: dict[str, str] = field(default_factory=dict)
     skip_tool_types: set[str] = field(default_factory=set)
-    hitl: Any = None
     send_chain_start_event: bool = True
     send_chain_end_event: bool = True
     send_llm_start_event: bool = True
@@ -91,7 +90,6 @@ class OpenBoxMiddleware(AgentMiddleware):
             "send_llm_start_event": opts.send_llm_start_event,
             "send_llm_end_event": opts.send_llm_end_event,
             "skip_tool_types": opts.skip_tool_types,
-            "hitl": opts.hitl,
             "session_id": opts.session_id,
             "agent_name": opts.agent_name,
             "task_queue": opts.task_queue,

@@ -597,3 +597,292 @@ class TestOtelContextPropagation:
             await handle_wrap_model_call(middleware, model_request, model_handler)
             mock_otel.assert_called_once()
             assert mock_otel.call_args[0][1] == "llm.call"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Hook-level HITL retry tests
+# ═══════════════════════════════════════════════════════════════════
+
+class TestHookHITLRetry:
+    """Tests for REQUIRE_APPROVAL from OTel hooks (httpx/file/DB spans)."""
+
+    @pytest.fixture
+    def tool_request(self):
+        req = MagicMock()
+        req.tool_call = {"name": "search_web", "args": {"query": "test"}, "id": "call_1"}
+        return req
+
+    @pytest.mark.asyncio
+    async def test_hook_require_approval_polls_and_retries(self, middleware, tool_request):
+        """REQUIRE_APPROVAL from hook → poll → approval → retry tool."""
+        from openbox_langgraph.errors import GovernanceBlockedError
+
+        middleware._workflow_id = "wf-1"
+        middleware._run_id = "run-1"
+        success_result = MagicMock(content="Search results")
+
+        # First call raises REQUIRE_APPROVAL, second succeeds
+        call_count = 0
+
+        async def mock_otel_context(mw, span_name, act_id, handler, request):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise GovernanceBlockedError("require_approval", "Needs approval", "https://api.com")
+            return success_result
+
+        with patch("openbox_deepagent.middleware_hooks._run_with_otel_context",
+                    side_effect=mock_otel_context), \
+             patch("openbox_deepagent.middleware_hooks.poll_until_decision",
+                    new_callable=AsyncMock) as mock_poll:
+            result = await handle_wrap_tool_call(middleware, tool_request, AsyncMock())
+
+        assert result is success_result
+        assert call_count == 2
+        mock_poll.assert_called_once()
+        middleware._span_processor.clear_activity_abort.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_hook_require_approval_rejected(self, middleware, tool_request):
+        """REQUIRE_APPROVAL → poll → rejected → GovernanceHaltError."""
+        from openbox_langgraph.errors import GovernanceBlockedError, GovernanceHaltError
+        from openbox_langgraph.errors import ApprovalRejectedError
+
+        middleware._workflow_id = "wf-1"
+        middleware._run_id = "run-1"
+
+        async def mock_otel_context(mw, span_name, act_id, handler, request):
+            raise GovernanceBlockedError("require_approval", "Needs approval", "https://api.com")
+
+        with patch("openbox_deepagent.middleware_hooks._run_with_otel_context",
+                    side_effect=mock_otel_context), \
+             patch("openbox_deepagent.middleware_hooks.poll_until_decision",
+                    new_callable=AsyncMock,
+                    side_effect=ApprovalRejectedError("Rejected by reviewer")):
+            with pytest.raises(GovernanceHaltError):
+                await handle_wrap_tool_call(middleware, tool_request, AsyncMock())
+
+        middleware._span_processor.clear_activity_context.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_hook_require_approval_timeout(self, middleware, tool_request):
+        """REQUIRE_APPROVAL → poll → timeout → GovernanceHaltError."""
+        from openbox_langgraph.errors import GovernanceBlockedError, GovernanceHaltError
+        from openbox_langgraph.errors import ApprovalTimeoutError
+
+        middleware._workflow_id = "wf-1"
+        middleware._run_id = "run-1"
+
+        async def mock_otel_context(mw, span_name, act_id, handler, request):
+            raise GovernanceBlockedError("require_approval", "Needs approval", "https://api.com")
+
+        with patch("openbox_deepagent.middleware_hooks._run_with_otel_context",
+                    side_effect=mock_otel_context), \
+             patch("openbox_deepagent.middleware_hooks.poll_until_decision",
+                    new_callable=AsyncMock,
+                    side_effect=ApprovalTimeoutError(600000)):
+            with pytest.raises(GovernanceHaltError):
+                await handle_wrap_tool_call(middleware, tool_request, AsyncMock())
+
+    @pytest.mark.asyncio
+    async def test_hook_block_verdict_still_propagates(self, middleware, tool_request):
+        """BLOCK from hook → propagates as GovernanceBlockedError, not caught by retry."""
+        from openbox_langgraph.errors import GovernanceBlockedError
+
+        middleware._workflow_id = "wf-1"
+        middleware._run_id = "run-1"
+
+        async def mock_otel_context(mw, span_name, act_id, handler, request):
+            raise GovernanceBlockedError("block", "Blocked by policy", "https://api.com")
+
+        with patch("openbox_deepagent.middleware_hooks._run_with_otel_context",
+                    side_effect=mock_otel_context):
+            with pytest.raises(GovernanceBlockedError):
+                await handle_wrap_tool_call(middleware, tool_request, AsyncMock())
+
+        # Should have sent ToolCompleted(failed)
+        calls = middleware._client.evaluate_event.call_args_list
+        event_types = [c[0][0].event_type for c in calls]
+        assert "ToolCompleted" in event_types
+
+    @pytest.mark.asyncio
+    async def test_hook_require_approval_clears_abort_flag(self, middleware, tool_request):
+        """Abort flag cleared before retry so subsequent hooks don't short-circuit."""
+        from openbox_langgraph.errors import GovernanceBlockedError
+
+        middleware._workflow_id = "wf-1"
+        middleware._run_id = "run-1"
+
+        call_count = 0
+
+        async def mock_otel_context(mw, span_name, act_id, handler, request):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise GovernanceBlockedError("require_approval", "Approval needed", "file:///tmp/x")
+            return MagicMock(content="ok")
+
+        with patch("openbox_deepagent.middleware_hooks._run_with_otel_context",
+                    side_effect=mock_otel_context), \
+             patch("openbox_deepagent.middleware_hooks.poll_until_decision",
+                    new_callable=AsyncMock):
+            await handle_wrap_tool_call(middleware, tool_request, AsyncMock())
+
+        # clear_activity_abort called with workflow_id and the activity_id
+        middleware._span_processor.clear_activity_abort.assert_called_once()
+        args = middleware._span_processor.clear_activity_abort.call_args[0]
+        assert args[0] == "wf-1"  # workflow_id
+
+    @pytest.mark.asyncio
+    async def test_wrapped_require_approval_polls_and_retries(self, middleware):
+        """Wrapped GovernanceBlockedError (e.g. subagent LLM → OpenAI SDK) → poll → retry."""
+        from openbox_langgraph.errors import GovernanceBlockedError
+
+        middleware._workflow_id = "wf-1"
+        middleware._run_id = "run-1"
+        success_result = MagicMock(content="Task completed")
+
+        call_count = 0
+        req = MagicMock()
+        req.tool_call = {"name": "task", "args": {"description": "Research AI", "subagent_type": "researcher"}, "id": "c1"}
+
+        async def mock_otel_context(mw, span_name, act_id, handler, request):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                gov_err = GovernanceBlockedError("require_approval", "Approval needed", "https://api.openai.com")
+                raise RuntimeError("Connection error.") from gov_err
+            return success_result
+
+        with patch("openbox_deepagent.middleware_hooks._run_with_otel_context",
+                    side_effect=mock_otel_context), \
+             patch("openbox_deepagent.middleware_hooks.poll_until_decision",
+                    new_callable=AsyncMock) as mock_poll:
+            result = await handle_wrap_tool_call(middleware, req, AsyncMock())
+
+        assert result is success_result
+        assert call_count == 2
+        mock_poll.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Hook-level HITL retry in model call tests
+# ═══════════════════════════════════════════════════════════════════
+
+class TestModelCallHookHITLRetry:
+    """Tests for REQUIRE_APPROVAL from OTel hooks during LLM calls."""
+
+    @pytest.fixture
+    def model_request(self):
+        req = MagicMock()
+        req.messages = [MagicMock(type="human", content="What is AI?")]
+        req.model = MagicMock(__str__=lambda self: "gpt-4o-mini")
+        return req
+
+    @pytest.fixture
+    def model_response(self):
+        resp = MagicMock()
+        resp.message = MagicMock(
+            content="AI is artificial intelligence.",
+            response_metadata={"model_name": "gpt-4o-mini"},
+            usage_metadata={"input_tokens": 10, "output_tokens": 20},
+            tool_calls=[],
+        )
+        return resp
+
+    @pytest.mark.asyncio
+    async def test_direct_require_approval_polls_and_retries(self, middleware, model_request, model_response):
+        """Direct GovernanceBlockedError(require_approval) → poll → retry LLM call."""
+        from openbox_langgraph.errors import GovernanceBlockedError
+
+        middleware._workflow_id = "wf-1"
+        middleware._run_id = "run-1"
+        middleware._first_llm_call = False
+        middleware._pre_screen_response = None
+
+        call_count = 0
+
+        async def mock_otel_context(mw, span_name, act_id, handler, request):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise GovernanceBlockedError("require_approval", "Needs approval", "https://api.openai.com")
+            return model_response
+
+        with patch("openbox_deepagent.middleware_hooks._run_with_otel_context",
+                    side_effect=mock_otel_context), \
+             patch("openbox_deepagent.middleware_hooks.poll_until_decision",
+                    new_callable=AsyncMock):
+            result = await handle_wrap_model_call(middleware, model_request, AsyncMock())
+
+        assert call_count == 2
+        assert result is model_response
+
+    @pytest.mark.asyncio
+    async def test_wrapped_require_approval_polls_and_retries(self, middleware, model_request, model_response):
+        """Wrapped GovernanceBlockedError (e.g. inside APIConnectionError) → poll → retry."""
+        from openbox_langgraph.errors import GovernanceBlockedError
+
+        middleware._workflow_id = "wf-1"
+        middleware._run_id = "run-1"
+        middleware._first_llm_call = False
+        middleware._pre_screen_response = None
+
+        call_count = 0
+
+        async def mock_otel_context(mw, span_name, act_id, handler, request):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Simulate OpenAI SDK wrapping: raise SomeError from GovernanceBlockedError
+                gov_err = GovernanceBlockedError("require_approval", "Approval needed", "https://api.openai.com")
+                raise RuntimeError("Connection error.") from gov_err
+            return model_response
+
+        with patch("openbox_deepagent.middleware_hooks._run_with_otel_context",
+                    side_effect=mock_otel_context), \
+             patch("openbox_deepagent.middleware_hooks.poll_until_decision",
+                    new_callable=AsyncMock):
+            result = await handle_wrap_model_call(middleware, model_request, AsyncMock())
+
+        assert call_count == 2
+        assert result is model_response
+
+    @pytest.mark.asyncio
+    async def test_wrapped_non_governance_error_propagates(self, middleware, model_request):
+        """Non-governance error wrapped → propagates as-is."""
+        middleware._workflow_id = "wf-1"
+        middleware._run_id = "run-1"
+        middleware._first_llm_call = False
+        middleware._pre_screen_response = None
+
+        async def mock_otel_context(mw, span_name, act_id, handler, request):
+            raise RuntimeError("Actual connection error")
+
+        with patch("openbox_deepagent.middleware_hooks._run_with_otel_context",
+                    side_effect=mock_otel_context):
+            with pytest.raises(RuntimeError, match="Actual connection error"):
+                await handle_wrap_model_call(middleware, model_request, AsyncMock())
+
+    @pytest.mark.asyncio
+    async def test_wrapped_require_approval_rejected(self, middleware, model_request):
+        """Wrapped REQUIRE_APPROVAL → poll → rejected → GovernanceHaltError."""
+        from openbox_langgraph.errors import GovernanceBlockedError, GovernanceHaltError
+        from openbox_langgraph.errors import ApprovalRejectedError
+
+        middleware._workflow_id = "wf-1"
+        middleware._run_id = "run-1"
+        middleware._first_llm_call = False
+        middleware._pre_screen_response = None
+
+        async def mock_otel_context(mw, span_name, act_id, handler, request):
+            gov_err = GovernanceBlockedError("require_approval", "Needs approval", "https://api.openai.com")
+            raise RuntimeError("Connection error.") from gov_err
+
+        with patch("openbox_deepagent.middleware_hooks._run_with_otel_context",
+                    side_effect=mock_otel_context), \
+             patch("openbox_deepagent.middleware_hooks.poll_until_decision",
+                    new_callable=AsyncMock,
+                    side_effect=ApprovalRejectedError("Rejected")):
+            with pytest.raises(GovernanceHaltError):
+                await handle_wrap_model_call(middleware, model_request, AsyncMock())
