@@ -665,10 +665,10 @@ class TestHookHITLRetry:
         middleware._span_processor.clear_activity_context.assert_called()
 
     @pytest.mark.asyncio
-    async def test_hook_require_approval_timeout(self, middleware, tool_request):
-        """REQUIRE_APPROVAL → poll → timeout → GovernanceHaltError."""
+    async def test_hook_require_approval_expired(self, middleware, tool_request):
+        """REQUIRE_APPROVAL → poll → expired → GovernanceHaltError."""
         from openbox_langgraph.errors import GovernanceBlockedError, GovernanceHaltError
-        from openbox_langgraph.errors import ApprovalTimeoutError
+        from openbox_langgraph.errors import ApprovalExpiredError
 
         middleware._workflow_id = "wf-1"
         middleware._run_id = "run-1"
@@ -680,7 +680,7 @@ class TestHookHITLRetry:
                     side_effect=mock_otel_context), \
              patch("openbox_deepagent.middleware_hooks.poll_until_decision",
                     new_callable=AsyncMock,
-                    side_effect=ApprovalTimeoutError(600000)):
+                    side_effect=ApprovalExpiredError("Approval expired")):
             with pytest.raises(GovernanceHaltError):
                 await handle_wrap_tool_call(middleware, tool_request, AsyncMock())
 
@@ -741,27 +741,23 @@ class TestHookHITLRetry:
         middleware._workflow_id = "wf-1"
         middleware._run_id = "run-1"
         success_result = MagicMock(content="Task completed")
-
-        call_count = 0
         req = MagicMock()
         req.tool_call = {"name": "task", "args": {"description": "Research AI", "subagent_type": "researcher"}, "id": "c1"}
 
-        async def mock_otel_context(mw, span_name, act_id, handler, request):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                gov_err = GovernanceBlockedError("require_approval", "Approval needed", "https://api.openai.com")
-                raise RuntimeError("Connection error.") from gov_err
-            return success_result
+        # First call raises wrapped error, second succeeds
+        gov_err = GovernanceBlockedError("require_approval", "Approval needed", "https://api.openai.com")
+        wrapped_err = RuntimeError("Connection error.")
+        wrapped_err.__cause__ = gov_err
 
-        with patch("openbox_deepagent.middleware_hooks._run_with_otel_context",
-                    side_effect=mock_otel_context), \
+        mock_otel = AsyncMock(side_effect=[wrapped_err, success_result])
+
+        with patch("openbox_deepagent.middleware_hooks._run_with_otel_context", mock_otel), \
              patch("openbox_deepagent.middleware_hooks.poll_until_decision",
                     new_callable=AsyncMock) as mock_poll:
             result = await handle_wrap_tool_call(middleware, req, AsyncMock())
 
         assert result is success_result
-        assert call_count == 2
+        assert mock_otel.call_count == 2
         mock_poll.assert_called_once()
 
 
