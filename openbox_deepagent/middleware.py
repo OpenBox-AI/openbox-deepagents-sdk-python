@@ -53,6 +53,7 @@ class OpenBoxMiddlewareOptions:
     known_subagents: list[str] = field(default_factory=lambda: ["general-purpose"])
     tool_type_map: dict[str, str] = field(default_factory=dict)
     skip_tool_types: set[str] = field(default_factory=set)
+    sqlalchemy_engine: Any = None
     send_chain_start_event: bool = True
     send_chain_end_event: bool = True
     send_llm_start_event: bool = True
@@ -119,6 +120,7 @@ class OpenBoxMiddleware(AgentMiddleware):
                 api_timeout=gc.governance_timeout,
                 on_api_error=self._config.on_api_error,
                 instrument_file_io=True,
+                sqlalchemy_engine=opts.sqlalchemy_engine,
             )
             # Suppress harmless OTel context detach errors from asyncio.Task
             # boundaries in LangGraph — the token was attached in one task

@@ -165,6 +165,7 @@ asyncio.run(main())
 | `tool_type_map` | `dict[str, str]` | `{}` | Map tool names to semantic types for classification |
 | `skip_chain_types` | `set[str]` | `set()` | Chain node names to skip governance for |
 | `skip_tool_types` | `set[str]` | `set()` | Tool names to skip governance for entirely |
+| `sqlalchemy_engine` | `Engine` | `None` | SQLAlchemy Engine instance to instrument for DB governance. Required when the engine is created before the middleware (see [Database governance](#database-governance)) |
 
 ---
 
@@ -403,6 +404,39 @@ result := {"decision": "REQUIRE_APPROVAL", "reason": "HTTP calls require approva
     item["__openbox"].tool_type == "http"
 }
 ```
+
+---
+
+### Database governance
+
+The SDK instruments database operations via OpenTelemetry. Supported libraries: psycopg2, asyncpg, mysql, pymysql, sqlite3, pymongo, redis, sqlalchemy.
+
+Install the instrumentor for your database:
+
+```bash
+pip install opentelemetry-instrumentation-sqlite3      # SQLite
+pip install opentelemetry-instrumentation-psycopg2     # PostgreSQL
+pip install opentelemetry-instrumentation-sqlalchemy    # SQLAlchemy ORM
+```
+
+**Important: initialization order.** If your database connection or SQLAlchemy engine is created **before** `create_openbox_middleware()`, pass the engine explicitly:
+
+```python
+from langchain_community.utilities import SQLDatabase
+
+# Engine created here (before middleware)
+db = SQLDatabase.from_uri("sqlite:///Chinook.db")
+
+# Pass engine so the SDK can instrument it retroactively
+middleware = create_openbox_middleware(
+    api_url=os.environ["OPENBOX_URL"],
+    api_key=os.environ["OPENBOX_API_KEY"],
+    agent_name="TextToSQL",
+    sqlalchemy_engine=db._engine,  # <-- instrument existing engine
+)
+```
+
+Without `sqlalchemy_engine=`, only engines created **after** middleware initialization are instrumented. Check startup logs for `Instrumented: sqlalchemy (existing engine)` vs `Instrumented: sqlalchemy (future engines)` to confirm.
 
 ---
 

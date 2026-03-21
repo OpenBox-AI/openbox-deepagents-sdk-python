@@ -31,6 +31,7 @@ def create_openbox_middleware(
     governance_timeout: float = 30.0,
     validate: bool = True,
     known_subagents: list[str] | None = None,
+    sqlalchemy_engine: Any = None,
     **kwargs: Any,
 ) -> OpenBoxMiddleware:
     """Create a configured OpenBoxMiddleware for create_deep_agent(middleware=[...]).
@@ -45,6 +46,10 @@ def create_openbox_middleware(
         validate: If True, validates the API key against the server on startup.
         known_subagents: Subagent names from ``create_deep_agent(subagents=[...])``.
             Defaults to ``["general-purpose"]``.
+        sqlalchemy_engine: Optional SQLAlchemy Engine instance to instrument for DB
+            governance. Required when the engine is created before the middleware
+            (e.g. ``SQLDatabase.from_uri()``). Without this, only engines created
+            after middleware initialization will be instrumented.
         **kwargs: Additional keyword arguments forwarded to ``OpenBoxMiddlewareOptions``.
 
     Returns:
@@ -63,6 +68,7 @@ def create_openbox_middleware(
         agent_name=agent_name,
         governance_timeout=governance_timeout,
         known_subagents=known_subagents or ["general-purpose"],
+        sqlalchemy_engine=sqlalchemy_engine,
         **{k: v for k, v in kwargs.items() if k in valid_fields},
     )
     return OpenBoxMiddleware(options)
