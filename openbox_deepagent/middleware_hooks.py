@@ -9,23 +9,16 @@ Each function implements one middleware hook, mapping to governance events:
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
-from typing import Any, TYPE_CHECKING
-
-import logging
-
-from opentelemetry import context as otel_context, trace as otel_trace
-
-_tracer = otel_trace.get_tracer("openbox-deepagent")
-_logger = logging.getLogger(__name__)
+from typing import TYPE_CHECKING, Any
 
 from openbox_langgraph.errors import (
     ApprovalExpiredError,
     ApprovalRejectedError,
     GovernanceBlockedError,
     GovernanceHaltError,
-    GuardrailsValidationError,
 )
 from openbox_langgraph.hitl import HITLPollParams, poll_until_decision
 from openbox_langgraph.types import (
@@ -34,11 +27,15 @@ from openbox_langgraph.types import (
     safe_serialize,
 )
 from openbox_langgraph.verdict_handler import enforce_verdict
+from opentelemetry import context as otel_context
+from opentelemetry import trace as otel_trace
 
 from openbox_deepagent.subagent_resolver import (
-    DEEPAGENT_SUBAGENT_TOOL,
     resolve_subagent_from_tool_call,
 )
+
+_tracer = otel_trace.get_tracer("openbox-deepagent")
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from openbox_deepagent.middleware import OpenBoxMiddleware
@@ -239,7 +236,10 @@ def _extract_response_metadata(response: Any) -> dict[str, Any]:
     if isinstance(content, str):
         result["completion"] = content
     elif isinstance(content, list):
-        parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
+        parts = [
+            p.get("text", "") for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
+        ]
         result["completion"] = " ".join(parts) if parts else None
 
     # Tool calls
@@ -293,7 +293,9 @@ async def _run_with_otel_context(
 # Hook: abefore_agent
 # ═══════════════════════════════════════════════════════════════════
 
-async def handle_before_agent(mw: OpenBoxMiddleware, state: Any, runtime: Any) -> dict[str, Any] | None:
+async def handle_before_agent(
+    mw: OpenBoxMiddleware, state: Any, runtime: Any,
+) -> dict[str, Any] | None:
     """Session setup: SignalReceived + WorkflowStarted + pre-screen guardrails.
 
     Fires once per invoke() before any model calls.
@@ -309,7 +311,10 @@ async def handle_before_agent(mw: OpenBoxMiddleware, state: Any, runtime: Any) -
     mw._pre_screen_response = None
 
     base = _base_event_fields(mw)
-    messages = state.get("messages", []) if isinstance(state, dict) else getattr(state, "messages", [])
+    messages = (
+        state.get("messages", []) if isinstance(state, dict)
+        else getattr(state, "messages", [])
+    )
 
     # 2. SignalReceived — user prompt as trigger
     user_prompt = _extract_last_user_message(messages)
@@ -393,13 +398,18 @@ async def handle_before_agent(mw: OpenBoxMiddleware, state: Any, runtime: Any) -
 # Hook: aafter_agent
 # ═══════════════════════════════════════════════════════════════════
 
-async def handle_after_agent(mw: OpenBoxMiddleware, state: Any, runtime: Any) -> dict[str, Any] | None:
+async def handle_after_agent(
+    mw: OpenBoxMiddleware, state: Any, runtime: Any,
+) -> dict[str, Any] | None:
     """Session close: WorkflowCompleted + cleanup.
 
     Fires once per invoke() after agent completes.
     """
     if mw._config.send_chain_end_event:
-        messages = state.get("messages", []) if isinstance(state, dict) else getattr(state, "messages", [])
+        messages = (
+        state.get("messages", []) if isinstance(state, dict)
+        else getattr(state, "messages", [])
+    )
         last_content = None
         if messages:
             last_msg = messages[-1]
@@ -452,7 +462,11 @@ async def handle_wrap_model_call(mw: OpenBoxMiddleware, request: Any, handler: A
     else:
         mw._first_llm_call = False
         if mw._config.send_llm_start_event:
-            model_name = str(request.model) if hasattr(request, "model") and request.model else "LLM"
+            model_name = (
+                str(request.model)
+                if hasattr(request, "model") and request.model
+                else "LLM"
+            )
             gov = LangChainGovernanceEvent(
                 **base,
                 event_type="LLMStarted",
@@ -501,13 +515,20 @@ async def handle_wrap_model_call(mw: OpenBoxMiddleware, request: Any, handler: A
             hook_err = _extract_governance_blocked(exc)
             if hook_err is None or hook_err.verdict != "require_approval":
                 raise
-            _logger.info("[OpenBox] Hook REQUIRE_APPROVAL (wrapped) during activity=llm_call, polling")
+            _logger.info(
+                "[OpenBox] Hook REQUIRE_APPROVAL (wrapped) "
+                "during activity=llm_call, polling",
+            )
             await _poll_approval_or_halt(mw, activity_id, "llm_call")
             _logger.info("[OpenBox] Approval granted, retrying activity=llm_call")
     duration_ms = (time.monotonic() - start) * 1000
 
     # 7. Send LLMCompleted
-    _logger.debug("[OpenBox] wrap_model_call AFTER: activity_id=%s duration=%.0fms send_llm_end=%s", activity_id, duration_ms, mw._config.send_llm_end_event)
+    _logger.debug(
+        "[OpenBox] wrap_model_call AFTER: activity_id=%s "
+        "duration=%.0fms send_llm_end=%s",
+        activity_id, duration_ms, mw._config.send_llm_end_event,
+    )
     if mw._config.send_llm_end_event:
         meta = _extract_response_metadata(model_response)
         completed = LangChainGovernanceEvent(
@@ -515,7 +536,10 @@ async def handle_wrap_model_call(mw: OpenBoxMiddleware, request: Any, handler: A
             event_type="LLMCompleted",
             activity_id=f"{activity_id}-c",
             activity_type="llm_call",
-            activity_output=safe_serialize(model_response) if hasattr(model_response, "__dict__") else None,
+            activity_output=(
+                safe_serialize(model_response)
+                if hasattr(model_response, "__dict__") else None
+            ),
             status="completed",
             duration_ms=duration_ms,
             llm_model=meta.get("llm_model"),
@@ -630,7 +654,10 @@ async def handle_wrap_tool_call(mw: OpenBoxMiddleware, request: Any, handler: An
             break  # success — exit retry loop
         except GovernanceBlockedError as hook_err:
             if hook_err.verdict != "require_approval":
-                _logger.warning("[OpenBox] Hook BLOCKED tool=%s verdict=%s", tool_name, hook_err.verdict)
+                _logger.warning(
+                    "[OpenBox] Hook BLOCKED tool=%s verdict=%s",
+                    tool_name, hook_err.verdict,
+                )
                 duration_ms = (time.monotonic() - start) * 1000
                 if mw._span_processor:
                     mw._span_processor.clear_activity_context(mw._workflow_id, activity_id)
@@ -657,11 +684,18 @@ async def handle_wrap_tool_call(mw: OpenBoxMiddleware, request: Any, handler: An
         except Exception as exc:
             hook_err = _extract_governance_blocked(exc)
             if hook_err is not None and hook_err.verdict == "require_approval":
-                _logger.info("[OpenBox] Hook REQUIRE_APPROVAL (wrapped) during activity=%s, polling", tool_name)
+                _logger.info(
+                    "[OpenBox] Hook REQUIRE_APPROVAL (wrapped) "
+                    "during activity=%s, polling", tool_name,
+                )
                 await _poll_approval_or_halt(mw, activity_id, tool_name)
                 _logger.info("[OpenBox] Approval granted, retrying activity=%s", tool_name)
             else:
-                _logger.warning("[OpenBox] wrap_tool_call EXCEPTION: tool=%s activity_id=%s error=%s", tool_name, activity_id, exc)
+                _logger.warning(
+                    "[OpenBox] wrap_tool_call EXCEPTION: "
+                    "tool=%s activity_id=%s error=%s",
+                    tool_name, activity_id, exc,
+                )
                 duration_ms = (time.monotonic() - start) * 1000
                 if mw._span_processor:
                     mw._span_processor.clear_activity_context(mw._workflow_id, activity_id)
@@ -681,8 +715,12 @@ async def handle_wrap_tool_call(mw: OpenBoxMiddleware, request: Any, handler: An
                     await _evaluate(mw, failed_event)
                 raise
     duration_ms = (time.monotonic() - start) * 1000
-    _logger.debug("[OpenBox] wrap_tool_call AFTER: tool=%s activity_id=%s duration=%.0fms send_tool_end=%s",
-                  tool_name, activity_id, duration_ms, mw._config.send_tool_end_event)
+    _logger.debug(
+        "[OpenBox] wrap_tool_call AFTER: tool=%s activity_id=%s "
+        "duration=%.0fms send_tool_end=%s",
+        tool_name, activity_id, duration_ms,
+        mw._config.send_tool_end_event,
+    )
 
     # === AFTER TOOL CALL ===
 
@@ -691,7 +729,10 @@ async def handle_wrap_tool_call(mw: OpenBoxMiddleware, request: Any, handler: An
         mw._span_processor.clear_activity_context(mw._workflow_id, activity_id)
 
     # 7. Send ToolCompleted + enforce verdict
-    _logger.debug("[OpenBox] ToolCompleted PREPARING: tool=%s activity_id=%s-c", tool_name, activity_id)
+    _logger.debug(
+        "[OpenBox] ToolCompleted PREPARING: tool=%s activity_id=%s-c",
+        tool_name, activity_id,
+    )
     if mw._config.send_tool_end_event:
         try:
             serialized_output = (
@@ -713,9 +754,15 @@ async def handle_wrap_tool_call(mw: OpenBoxMiddleware, request: Any, handler: An
             status="completed",
             duration_ms=duration_ms,
         )
-        _logger.debug("[OpenBox] ToolCompleted SENDING: tool=%s activity_id=%s-c", tool_name, activity_id)
-        resp = await _evaluate(mw,completed)
-        _logger.debug("[OpenBox] ToolCompleted SENT: tool=%s activity_id=%s-c resp=%s", tool_name, activity_id, resp)
+        _logger.debug(
+            "[OpenBox] ToolCompleted SENDING: tool=%s activity_id=%s-c",
+            tool_name, activity_id,
+        )
+        resp = await _evaluate(mw, completed)
+        _logger.debug(
+            "[OpenBox] ToolCompleted SENT: tool=%s activity_id=%s-c resp=%s",
+            tool_name, activity_id, resp,
+        )
         if resp is not None:
             result = enforce_verdict(resp, "tool_end")
             if result.requires_hitl:

@@ -115,8 +115,14 @@ def graph_has_interrupt_on(graph: Any) -> bool:
     DeepAgents HumanInTheLoopMiddleware sets these on the compiled graph.
     This is a best-effort check — false negatives are possible for custom setups.
     """
-    interrupt_before = getattr(graph, "interrupt_before", None) or getattr(graph, "interruptBefore", None)
-    interrupt_after = getattr(graph, "interrupt_after", None) or getattr(graph, "interruptAfter", None)
+    interrupt_before = (
+        getattr(graph, "interrupt_before", None)
+        or getattr(graph, "interruptBefore", None)
+    )
+    interrupt_after = (
+        getattr(graph, "interrupt_after", None)
+        or getattr(graph, "interruptAfter", None)
+    )
     if isinstance(interrupt_before, (list, tuple, set)) and len(interrupt_before) > 0:
         return True
     if isinstance(interrupt_after, (list, tuple, set)) and len(interrupt_after) > 0:

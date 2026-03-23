@@ -2,24 +2,21 @@
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from openbox_langgraph.types import GovernanceVerdictResponse, Verdict
 
 from openbox_deepagent.middleware import OpenBoxMiddleware, OpenBoxMiddlewareOptions
 from openbox_deepagent.middleware_hooks import (
     _extract_last_user_message,
     _extract_prompt_from_messages,
-    _extract_response_metadata,
     _run_with_otel_context,
     handle_after_agent,
     handle_before_agent,
     handle_wrap_model_call,
     handle_wrap_tool_call,
 )
-from openbox_langgraph.types import GovernanceVerdictResponse, Verdict
-
 
 # ═══════════════════════════════════════════════════════════════════
 # Fixtures
@@ -213,7 +210,9 @@ class TestBeforeAgent:
         assert middleware._pre_screen_response.verdict == Verdict.ALLOW
 
     @pytest.mark.asyncio
-    async def test_skips_workflow_started_when_disabled(self, middleware, state_with_user_msg, runtime):
+    async def test_skips_workflow_started_when_disabled(
+        self, middleware, state_with_user_msg, runtime,
+    ):
         middleware._config.send_chain_start_event = False
         await handle_before_agent(middleware, state_with_user_msg, runtime)
         calls = middleware._client.evaluate_event.call_args_list
@@ -221,7 +220,9 @@ class TestBeforeAgent:
         assert "WorkflowStarted" not in event_types
 
     @pytest.mark.asyncio
-    async def test_block_verdict_raises_and_closes_workflow(self, middleware, state_with_user_msg, runtime):
+    async def test_block_verdict_raises_and_closes_workflow(
+        self, middleware, state_with_user_msg, runtime,
+    ):
         from openbox_langgraph.errors import GovernanceBlockedError
         middleware._client.evaluate_event = AsyncMock(side_effect=[
             GovernanceVerdictResponse(verdict=Verdict.ALLOW),  # SignalReceived
@@ -373,7 +374,11 @@ class TestWrapToolCall:
     @pytest.fixture
     def task_request(self):
         req = MagicMock()
-        req.tool_call = {"name": "task", "args": {"description": "Research AI", "subagent_type": "researcher"}, "id": "call_2"}
+        req.tool_call = {
+            "name": "task",
+            "args": {"description": "Research AI", "subagent_type": "researcher"},
+            "id": "call_2",
+        }
         return req
 
     @pytest.fixture
@@ -412,7 +417,9 @@ class TestWrapToolCall:
         middleware._span_processor.clear_activity_context.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_regular_tool_registers_span_processor(self, middleware, tool_request, tool_handler):
+    async def test_regular_tool_registers_span_processor(
+        self, middleware, tool_request, tool_handler,
+    ):
         middleware._workflow_id = "wf-1"
         middleware._run_id = "run-1"
         await handle_wrap_tool_call(middleware, tool_request, tool_handler)
@@ -645,8 +652,11 @@ class TestHookHITLRetry:
     @pytest.mark.asyncio
     async def test_hook_require_approval_rejected(self, middleware, tool_request):
         """REQUIRE_APPROVAL → poll → rejected → GovernanceHaltError."""
-        from openbox_langgraph.errors import GovernanceBlockedError, GovernanceHaltError
-        from openbox_langgraph.errors import ApprovalRejectedError
+        from openbox_langgraph.errors import (
+            ApprovalRejectedError,
+            GovernanceBlockedError,
+            GovernanceHaltError,
+        )
 
         middleware._workflow_id = "wf-1"
         middleware._run_id = "run-1"
@@ -667,8 +677,11 @@ class TestHookHITLRetry:
     @pytest.mark.asyncio
     async def test_hook_require_approval_expired(self, middleware, tool_request):
         """REQUIRE_APPROVAL → poll → expired → GovernanceHaltError."""
-        from openbox_langgraph.errors import GovernanceBlockedError, GovernanceHaltError
-        from openbox_langgraph.errors import ApprovalExpiredError
+        from openbox_langgraph.errors import (
+            ApprovalExpiredError,
+            GovernanceBlockedError,
+            GovernanceHaltError,
+        )
 
         middleware._workflow_id = "wf-1"
         middleware._run_id = "run-1"
@@ -742,7 +755,11 @@ class TestHookHITLRetry:
         middleware._run_id = "run-1"
         success_result = MagicMock(content="Task completed")
         req = MagicMock()
-        req.tool_call = {"name": "task", "args": {"description": "Research AI", "subagent_type": "researcher"}, "id": "c1"}
+        req.tool_call = {
+            "name": "task",
+            "args": {"description": "Research AI", "subagent_type": "researcher"},
+            "id": "c1",
+        }
 
         # First call raises wrapped error, second succeeds
         gov_err = GovernanceBlockedError("require_approval", "Approval needed", "https://api.openai.com")
@@ -787,7 +804,9 @@ class TestModelCallHookHITLRetry:
         return resp
 
     @pytest.mark.asyncio
-    async def test_direct_require_approval_polls_and_retries(self, middleware, model_request, model_response):
+    async def test_direct_require_approval_polls_and_retries(
+        self, middleware, model_request, model_response,
+    ):
         """Direct GovernanceBlockedError(require_approval) → poll → retry LLM call."""
         from openbox_langgraph.errors import GovernanceBlockedError
 
@@ -815,7 +834,9 @@ class TestModelCallHookHITLRetry:
         assert result is model_response
 
     @pytest.mark.asyncio
-    async def test_wrapped_require_approval_polls_and_retries(self, middleware, model_request, model_response):
+    async def test_wrapped_require_approval_polls_and_retries(
+        self, middleware, model_request, model_response,
+    ):
         """Wrapped GovernanceBlockedError (e.g. inside APIConnectionError) → poll → retry."""
         from openbox_langgraph.errors import GovernanceBlockedError
 
@@ -863,8 +884,11 @@ class TestModelCallHookHITLRetry:
     @pytest.mark.asyncio
     async def test_wrapped_require_approval_rejected(self, middleware, model_request):
         """Wrapped REQUIRE_APPROVAL → poll → rejected → GovernanceHaltError."""
-        from openbox_langgraph.errors import GovernanceBlockedError, GovernanceHaltError
-        from openbox_langgraph.errors import ApprovalRejectedError
+        from openbox_langgraph.errors import (
+            ApprovalRejectedError,
+            GovernanceBlockedError,
+            GovernanceHaltError,
+        )
 
         middleware._workflow_id = "wf-1"
         middleware._run_id = "run-1"

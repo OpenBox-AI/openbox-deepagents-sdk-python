@@ -21,18 +21,15 @@ import asyncio
 import concurrent.futures
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest
 from langgraph.prebuilt.tool_node import ToolCallRequest
-
 from openbox_langgraph.client import GovernanceClient
 from openbox_langgraph.config import GovernanceConfig, get_global_config, merge_config
 from openbox_langgraph.types import GovernanceVerdictResponse
 
 if TYPE_CHECKING:
-    from langchain_core.messages import AIMessage, ToolMessage
-    from langgraph.types import Command
     from openbox_langgraph.span_processor import WorkflowSpanProcessor
 
 _logger = logging.getLogger(__name__)
@@ -243,8 +240,10 @@ class OpenBoxMiddleware(AgentMiddleware):
         hooks can find the activity context (avoids asyncio.run ContextVar
         fragmentation).
         """
+        from opentelemetry import context as otel_ctx
+        from opentelemetry import trace as otel_tr
+
         from openbox_deepagent.middleware_hooks import handle_wrap_model_call
-        from opentelemetry import context as otel_ctx, trace as otel_tr
 
         # Create OTel span in sync thread for httpx hook visibility
         tracer = otel_tr.get_tracer("openbox-deepagent")
@@ -287,11 +286,16 @@ class OpenBoxMiddleware(AgentMiddleware):
 
     def wrap_tool_call(self, request: ToolCallRequest, handler) -> Any:
         """Sync tool governance with direct OTel span in current thread."""
+        from opentelemetry import context as otel_ctx
+        from opentelemetry import trace as otel_tr
+
         from openbox_deepagent.middleware_hooks import handle_wrap_tool_call
-        from opentelemetry import context as otel_ctx, trace as otel_tr
 
         tracer = otel_tr.get_tracer("openbox-deepagent")
-        tool_name = request.tool_call.get("name", "tool") if hasattr(request, "tool_call") else "tool"
+        tool_name = (
+            request.tool_call.get("name", "tool")
+            if hasattr(request, "tool_call") else "tool"
+        )
         span = tracer.start_span(f"tool.{tool_name}.sync", kind=otel_tr.SpanKind.INTERNAL)
         token = otel_ctx.attach(otel_tr.set_span_in_context(span))
         trace_id = span.get_span_context().trace_id

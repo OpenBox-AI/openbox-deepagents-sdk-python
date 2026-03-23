@@ -15,14 +15,6 @@ Usage:
 
 from importlib.metadata import PackageNotFoundError, version
 
-from openbox_deepagent.middleware import OpenBoxMiddleware, OpenBoxMiddlewareOptions
-from openbox_deepagent.middleware_factory import create_openbox_middleware
-
-from openbox_deepagent.subagent_resolver import (
-    DEEPAGENT_BUILTIN_TOOLS,
-    DEEPAGENT_SUBAGENT_TOOL,
-)
-
 # Re-export the openbox-langgraph-sdk public surface
 from openbox_langgraph import (
     ApprovalExpiredError,
@@ -49,44 +41,51 @@ from openbox_langgraph import (
     safe_serialize,
 )
 
+from openbox_deepagent.middleware import OpenBoxMiddleware, OpenBoxMiddlewareOptions
+from openbox_deepagent.middleware_factory import create_openbox_middleware
+from openbox_deepagent.subagent_resolver import (
+    DEEPAGENT_BUILTIN_TOOLS,
+    DEEPAGENT_SUBAGENT_TOOL,
+)
+
 try:
     __version__ = version("openbox-deepagent")
 except PackageNotFoundError:
     __version__ = "unknown"
 
 __all__ = [
-    # Middleware API
-    "OpenBoxMiddleware",
-    "OpenBoxMiddlewareOptions",
-    "create_openbox_middleware",
     # Shared
     "DEEPAGENT_BUILTIN_TOOLS",
     "DEEPAGENT_SUBAGENT_TOOL",
-    # Base handler
-    "OpenBoxLangGraphHandler",
-    "OpenBoxLangGraphHandlerOptions",
-    "create_openbox_graph_handler",
-    "initialize",
-    "get_global_config",
-    "GovernanceConfig",
-    # Errors
-    "OpenBoxError",
-    "OpenBoxAuthError",
-    "OpenBoxNetworkError",
-    "OpenBoxInsecureURLError",
-    "GovernanceBlockedError",
-    "GovernanceHaltError",
-    "GuardrailsValidationError",
     "ApprovalExpiredError",
     "ApprovalRejectedError",
     "ApprovalTimeoutError",
+    "GovernanceBlockedError",
+    "GovernanceConfig",
+    "GovernanceHaltError",
+    "GovernanceVerdictResponse",
+    "GuardrailsValidationError",
+    "LangChainGovernanceEvent",
+    "LangGraphStreamEvent",
+    "OpenBoxAuthError",
+    # Errors
+    "OpenBoxError",
+    "OpenBoxInsecureURLError",
+    # Base handler
+    "OpenBoxLangGraphHandler",
+    "OpenBoxLangGraphHandlerOptions",
+    # Middleware API
+    "OpenBoxMiddleware",
+    "OpenBoxMiddlewareOptions",
+    "OpenBoxNetworkError",
     # Types
     "Verdict",
-    "LangGraphStreamEvent",
-    "LangChainGovernanceEvent",
-    "GovernanceVerdictResponse",
-    "rfc3339_now",
-    "safe_serialize",
     # Version
     "__version__",
+    "create_openbox_graph_handler",
+    "create_openbox_middleware",
+    "get_global_config",
+    "initialize",
+    "rfc3339_now",
+    "safe_serialize",
 ]
