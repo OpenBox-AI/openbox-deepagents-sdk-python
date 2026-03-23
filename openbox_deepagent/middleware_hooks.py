@@ -76,6 +76,33 @@ async def _evaluate(mw: OpenBoxMiddleware, event: Any) -> Any:
     return await mw._client.evaluate_event(event)
 
 
+async def _poll_approval_or_halt(
+    mw: OpenBoxMiddleware,
+    activity_id: str,
+    activity_type: str,
+) -> None:
+    """Poll for HITL approval, clearing abort state first.
+
+    On rejection/expiry, clears SpanProcessor context and raises GovernanceHaltError.
+    On approval, returns normally so the caller can retry.
+    """
+    if mw._span_processor:
+        mw._span_processor.clear_activity_abort(mw._workflow_id, activity_id)
+    try:
+        await poll_until_decision(
+            mw._client,
+            HITLPollParams(
+                workflow_id=mw._workflow_id, run_id=mw._run_id,
+                activity_id=activity_id, activity_type=activity_type,
+            ),
+            mw._config.hitl,
+        )
+    except (ApprovalRejectedError, ApprovalExpiredError) as e:
+        if mw._span_processor:
+            mw._span_processor.clear_activity_context(mw._workflow_id, activity_id)
+        raise GovernanceHaltError(str(e)) from e
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Helper: build base governance event fields
 # ═══════════════════════════════════════════════════════════════════
@@ -468,47 +495,19 @@ async def handle_wrap_model_call(mw: OpenBoxMiddleware, request: Any, handler: A
             if hook_err.verdict != "require_approval":
                 raise
             _logger.info("[OpenBox] Hook REQUIRE_APPROVAL during activity=llm_call, polling")
-            if mw._span_processor:
-                mw._span_processor.clear_activity_abort(mw._workflow_id, activity_id)
-            try:
-                await poll_until_decision(
-                    mw._client,
-                    HITLPollParams(
-                        workflow_id=mw._workflow_id, run_id=mw._run_id,
-                        activity_id=activity_id, activity_type="llm_call",
-                    ),
-                    mw._config.hitl,
-                )
-            except (ApprovalRejectedError, ApprovalExpiredError) as e:
-                if mw._span_processor:
-                    mw._span_processor.clear_activity_context(mw._workflow_id, activity_id)
-                raise GovernanceHaltError(str(e)) from e
+            await _poll_approval_or_halt(mw, activity_id, "llm_call")
             _logger.info("[OpenBox] Approval granted, retrying activity=llm_call")
         except Exception as exc:
             hook_err = _extract_governance_blocked(exc)
             if hook_err is None or hook_err.verdict != "require_approval":
                 raise
             _logger.info("[OpenBox] Hook REQUIRE_APPROVAL (wrapped) during activity=llm_call, polling")
-            if mw._span_processor:
-                mw._span_processor.clear_activity_abort(mw._workflow_id, activity_id)
-            try:
-                await poll_until_decision(
-                    mw._client,
-                    HITLPollParams(
-                        workflow_id=mw._workflow_id, run_id=mw._run_id,
-                        activity_id=activity_id, activity_type="llm_call",
-                    ),
-                    mw._config.hitl,
-                )
-            except (ApprovalRejectedError, ApprovalExpiredError) as e:
-                if mw._span_processor:
-                    mw._span_processor.clear_activity_context(mw._workflow_id, activity_id)
-                raise GovernanceHaltError(str(e)) from e
+            await _poll_approval_or_halt(mw, activity_id, "llm_call")
             _logger.info("[OpenBox] Approval granted, retrying activity=llm_call")
     duration_ms = (time.monotonic() - start) * 1000
 
     # 7. Send LLMCompleted
-    _logger.warning("[DIAG] wrap_model_call AFTER: activity_id=%s duration=%.0fms send_llm_end=%s", activity_id, duration_ms, mw._config.send_llm_end_event)
+    _logger.debug("[OpenBox] wrap_model_call AFTER: activity_id=%s duration=%.0fms send_llm_end=%s", activity_id, duration_ms, mw._config.send_llm_end_event)
     if mw._config.send_llm_end_event:
         meta = _extract_response_metadata(model_response)
         completed = LangChainGovernanceEvent(
@@ -526,7 +525,7 @@ async def handle_wrap_model_call(mw: OpenBoxMiddleware, request: Any, handler: A
             has_tool_calls=meta.get("has_tool_calls"),
             completion=meta.get("completion"),
         )
-        _logger.warning("[DIAG] LLMCompleted SENDING: activity_id=%s-c", activity_id)
+        _logger.debug("[OpenBox] LLMCompleted SENDING: activity_id=%s-c", activity_id)
         resp = await _evaluate(mw,completed)
         _logger.debug("[OpenBox] LLMCompleted SENT: activity_id=%s-c resp=%s", activity_id, resp)
         if resp is not None:
@@ -652,45 +651,15 @@ async def handle_wrap_tool_call(mw: OpenBoxMiddleware, request: Any, handler: An
                 raise
 
             _logger.info("[OpenBox] Hook REQUIRE_APPROVAL during activity=%s, polling", tool_name)
-            if mw._span_processor:
-                mw._span_processor.clear_activity_abort(mw._workflow_id, activity_id)
-            try:
-                await poll_until_decision(
-                    mw._client,
-                    HITLPollParams(
-                        workflow_id=mw._workflow_id, run_id=mw._run_id,
-                        activity_id=activity_id, activity_type=tool_name,
-                    ),
-                    mw._config.hitl,
-                )
-            except (ApprovalRejectedError, ApprovalExpiredError) as e:
-                if mw._span_processor:
-                    mw._span_processor.clear_activity_context(mw._workflow_id, activity_id)
-                raise GovernanceHaltError(str(e)) from e
+            await _poll_approval_or_halt(mw, activity_id, tool_name)
             _logger.info("[OpenBox] Approval granted, retrying activity=%s", tool_name)
-            # continue loop — retry tool
 
         except Exception as exc:
             hook_err = _extract_governance_blocked(exc)
             if hook_err is not None and hook_err.verdict == "require_approval":
                 _logger.info("[OpenBox] Hook REQUIRE_APPROVAL (wrapped) during activity=%s, polling", tool_name)
-                if mw._span_processor:
-                    mw._span_processor.clear_activity_abort(mw._workflow_id, activity_id)
-                try:
-                    await poll_until_decision(
-                        mw._client,
-                        HITLPollParams(
-                            workflow_id=mw._workflow_id, run_id=mw._run_id,
-                            activity_id=activity_id, activity_type=tool_name,
-                        ),
-                        mw._config.hitl,
-                    )
-                except (ApprovalRejectedError, ApprovalExpiredError) as e:
-                    if mw._span_processor:
-                        mw._span_processor.clear_activity_context(mw._workflow_id, activity_id)
-                    raise GovernanceHaltError(str(e)) from e
+                await _poll_approval_or_halt(mw, activity_id, tool_name)
                 _logger.info("[OpenBox] Approval granted, retrying activity=%s", tool_name)
-                # continue loop — retry tool
             else:
                 _logger.warning("[OpenBox] wrap_tool_call EXCEPTION: tool=%s activity_id=%s error=%s", tool_name, activity_id, exc)
                 duration_ms = (time.monotonic() - start) * 1000
@@ -699,17 +668,17 @@ async def handle_wrap_tool_call(mw: OpenBoxMiddleware, request: Any, handler: An
                 if mw._config.send_tool_end_event:
                     failed_event = LangChainGovernanceEvent(
                         **_base_event_fields(mw),
-                    event_type="ToolCompleted",
-                    activity_id=f"{activity_id}-c",
-                    activity_type=tool_name,
-                    activity_output=safe_serialize({"error": str(exc)}),
-                    tool_name=tool_name,
-                    tool_type=tool_type,
-                    subagent_name=subagent_name,
-                    status="failed",
-                    duration_ms=duration_ms,
-                )
-                await _evaluate(mw,failed_event)
+                        event_type="ToolCompleted",
+                        activity_id=f"{activity_id}-c",
+                        activity_type=tool_name,
+                        activity_output=safe_serialize({"error": str(exc)}),
+                        tool_name=tool_name,
+                        tool_type=tool_type,
+                        subagent_name=subagent_name,
+                        status="failed",
+                        duration_ms=duration_ms,
+                    )
+                    await _evaluate(mw, failed_event)
                 raise
     duration_ms = (time.monotonic() - start) * 1000
     _logger.debug("[OpenBox] wrap_tool_call AFTER: tool=%s activity_id=%s duration=%.0fms send_tool_end=%s",

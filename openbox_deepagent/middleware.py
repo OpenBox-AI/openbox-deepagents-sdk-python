@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, TYPE_CHECKING
@@ -108,7 +109,7 @@ class OpenBoxMiddleware(AgentMiddleware):
 
         # OTel span processor for hook-level governance
         self._span_processor: WorkflowSpanProcessor | None = None
-        if gc and gc.api_url and gc.api_key:
+        if gc.api_url and gc.api_key:
             from openbox_langgraph.otel_setup import setup_opentelemetry_for_governance
             from openbox_langgraph.span_processor import WorkflowSpanProcessor as WSP
             self._span_processor = WSP()
@@ -129,6 +130,9 @@ class OpenBoxMiddleware(AgentMiddleware):
             _logger.debug("[OpenBox] OTel HTTP governance hooks enabled (middleware)")
 
         self._known_subagents: frozenset[str] = frozenset(opts.known_subagents)
+
+        # Reusable thread pool for sync-to-async bridge (avoids per-call overhead)
+        self._sync_executor: concurrent.futures.ThreadPoolExecutor | None = None
 
         # Per-invocation state (reset in before_agent/abefore_agent)
         self._sync_mode: bool = False
@@ -183,8 +187,7 @@ class OpenBoxMiddleware(AgentMiddleware):
     # Async-to-sync bridge
     # ─────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _run_async(coro):
+    def _run_async(self, coro):
         """Run an async coroutine from sync context.
 
         When LangGraph calls sync hooks from inside its event loop,
@@ -197,7 +200,6 @@ class OpenBoxMiddleware(AgentMiddleware):
             loop = None
         if loop and loop.is_running():
             # Inside LangGraph's event loop — run in thread with OTel context
-            import concurrent.futures
             from opentelemetry import context as otel_context
             ctx = otel_context.get_current()
 
@@ -211,8 +213,9 @@ class OpenBoxMiddleware(AgentMiddleware):
                     except Exception:
                         pass
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(_run_with_ctx).result()
+            if self._sync_executor is None:
+                self._sync_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            return self._sync_executor.submit(_run_with_ctx).result()
         return asyncio.run(coro)
 
     # ─────────────────────────────────────────────────────────────
