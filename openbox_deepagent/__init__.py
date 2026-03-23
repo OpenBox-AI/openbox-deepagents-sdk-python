@@ -49,7 +49,7 @@ from openbox_deepagent.subagent_resolver import (
 )
 
 try:
-    __version__ = version("openbox-deepagent")
+    __version__ = version("openbox-deepagent-sdk-python")
 except PackageNotFoundError:
     __version__ = "unknown"
 

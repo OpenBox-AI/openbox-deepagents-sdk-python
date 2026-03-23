@@ -803,13 +803,14 @@ wheels = [
 ]
 
 [[package]]
-name = "openbox-deepagent"
+name = "openbox-deepagent-sdk-python"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "langchain" },
     { name = "langchain-core" },
     { name = "langgraph" },
-    { name = "openbox-langgraph-sdk" },
+    { name = "openbox-langgraph-sdk-python" },
 ]
 
 [package.optional-dependencies]
@@ -826,10 +827,11 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "deepagents", marker = "extra == 'deepagents'", specifier = ">=0.1.0" },
+    { name = "langchain", specifier = ">=0.3.0" },
     { name = "langchain-core", specifier = ">=0.3.0" },
     { name = "langgraph", specifier = ">=0.2.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
-    { name = "openbox-langgraph-sdk", editable = "../openbox-langgraph-sdk-python" },
+    { name = "openbox-langgraph-sdk-python", specifier = ">=0.1.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
@@ -837,9 +839,9 @@ requires-dist = [
 provides-extras = ["deepagents", "dev"]
 
 [[package]]
-name = "openbox-langgraph-sdk"
+name = "openbox-langgraph-sdk-python"
 version = "0.1.0"
-source = { editable = "../openbox-langgraph-sdk-python" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "langchain-core" },
@@ -859,38 +861,10 @@ dependencies = [
     { name = "opentelemetry-instrumentation-urllib3" },
     { name = "opentelemetry-sdk" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "langchain-core", specifier = ">=0.3.0" },
-    { name = "langgraph", specifier = ">=0.2.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
-    { name = "opentelemetry-api", specifier = ">=1.20.0" },
-    { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.20.0" },
-    { name = "opentelemetry-instrumentation-asyncpg", specifier = ">=0.41b0" },
-    { name = "opentelemetry-instrumentation-httpx", specifier = ">=0.41b0" },
-    { name = "opentelemetry-instrumentation-httpx", marker = "extra == 'otel'", specifier = ">=0.41b0" },
-    { name = "opentelemetry-instrumentation-mysql", specifier = ">=0.41b0" },
-    { name = "opentelemetry-instrumentation-psycopg2", specifier = ">=0.41b0" },
-    { name = "opentelemetry-instrumentation-pymongo", specifier = ">=0.41b0" },
-    { name = "opentelemetry-instrumentation-pymysql", specifier = ">=0.41b0" },
-    { name = "opentelemetry-instrumentation-redis", specifier = ">=0.41b0" },
-    { name = "opentelemetry-instrumentation-requests", specifier = ">=0.41b0" },
-    { name = "opentelemetry-instrumentation-requests", marker = "extra == 'otel'", specifier = ">=0.41b0" },
-    { name = "opentelemetry-instrumentation-sqlalchemy", specifier = ">=0.41b0" },
-    { name = "opentelemetry-instrumentation-sqlite3", specifier = ">=0.41b0" },
-    { name = "opentelemetry-instrumentation-urllib", specifier = ">=0.41b0" },
-    { name = "opentelemetry-instrumentation-urllib", marker = "extra == 'otel'", specifier = ">=0.41b0" },
-    { name = "opentelemetry-instrumentation-urllib3", specifier = ">=0.41b0" },
-    { name = "opentelemetry-instrumentation-urllib3", marker = "extra == 'otel'", specifier = ">=0.41b0" },
-    { name = "opentelemetry-sdk", specifier = ">=1.20.0" },
-    { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.20.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
+sdist = { url = "https://files.pythonhosted.org/packages/52/4c/496c1fedc450c64b19cd438df26c56fdd4c6b9c4a19626c42a7a45464ec1/openbox_langgraph_sdk_python-0.1.0.tar.gz", hash = "sha256:8a40dd83e70c14fcd756a478fcf004c4317064619ae36ed626483967c28d103c", size = 255262, upload-time = "2026-03-23T05:25:28.266Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/56/4d/78db7fc66cd5adf7c01a71baf1c14d7bbcf9e71dafd1262798d5e8c57032/openbox_langgraph_sdk_python-0.1.0-py3-none-any.whl", hash = "sha256:19d87ef0e8052ae20888d2a1bc61f333ee3290e66c7089d7897672baec35e78b", size = 68563, upload-time = "2026-03-23T05:25:26.801Z" },
 ]
-provides-extras = ["otel", "dev"]
 
 [[package]]
 name = "opentelemetry-api"

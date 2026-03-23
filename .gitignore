@@ -3,3 +3,4 @@ test-agent/.env
 /tests/__pycache__
 plans/
 .claude/
+.idea
