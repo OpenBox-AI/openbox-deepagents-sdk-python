@@ -44,6 +44,49 @@ import threading
 from datetime import datetime, timezone
 from typing import Any
 
+
+class _Tee:
+    def __init__(self, primary: Any, secondary: Any) -> None:
+        self._primary = primary
+        self._secondary = secondary
+
+    def write(self, data: str) -> int:
+        n = 0
+        try:
+            n = self._primary.write(data)
+        finally:
+            try:
+                self._secondary.write(data)
+            except Exception:
+                pass
+        return n
+
+    def flush(self) -> None:
+        try:
+            self._primary.flush()
+        finally:
+            try:
+                self._secondary.flush()
+            except Exception:
+                pass
+
+    def isatty(self) -> bool:
+        try:
+            return bool(self._primary.isatty())
+        except Exception:
+            return False
+
+
+_debug_log_fp = None
+if os.environ.get("OPENBOX_DEBUG"):
+    _debug_log_path = os.environ.get("OPENBOX_DEBUG_LOG", "./openbox-debug.txt")
+    try:
+        _debug_log_fp = open(_debug_log_path, "a", encoding="utf-8")
+        sys.stdout = _Tee(sys.stdout, _debug_log_fp)  # type: ignore[assignment]
+        sys.stderr = _Tee(sys.stderr, _debug_log_fp)  # type: ignore[assignment]
+    except Exception:
+        _debug_log_fp = None
+
 from deepagents import create_deep_agent
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
@@ -62,6 +105,74 @@ from openbox_deepagent import (
 )
 
 load_dotenv()
+
+# ─── Module-level graph (for langgraph dev) ───────────────────────
+# Built synchronously at import time using environment variables.
+# Required by `langgraph dev` which discovers graphs via langgraph.json.
+# Falls back gracefully if credentials are missing (handler is None).
+
+def _build_graph() -> OpenBoxDeepAgentHandler | None:
+    """Build and return the governed DeepAgents graph at module load time."""
+    openbox_url = os.environ.get("OPENBOX_URL", "")
+    openbox_api_key = os.environ.get("OPENBOX_API_KEY", "")
+    if not openbox_url or not openbox_api_key:
+        return None
+    from langchain.chat_models import init_chat_model as _init
+    _llm = _init("openai:gpt-4o-mini", temperature=0)
+    _custom_tools = [search_web, read_document, list_documents, write_report, export_data]
+    _subagent_defs = [
+        {
+            "name": "researcher",
+            "description": "Web research and summarization.",
+            "system_prompt": "You are a research assistant. Use search_web to find information.",
+            "tools": [search_web, read_document, list_documents],
+        },
+        {
+            "name": "analyst",
+            "description": "Data analysis and comparison.",
+            "system_prompt": "You are a data analyst. Assess information critically.",
+            "tools": [search_web, read_document, list_documents],
+        },
+        {
+            "name": "writer",
+            "description": "Drafting reports and structured content.",
+            "system_prompt": "You are a professional writer. Use write_report to save output.",
+            "tools": [write_report, read_document, list_documents],
+        },
+    ]
+    _graph = create_deep_agent(
+        model=_llm,
+        tools=_custom_tools,
+        subagents=_subagent_defs,
+        system_prompt=(
+            "You are ResearchBot, an AI research assistant governed by OpenBox compliance policies. "
+            "Use researcher for research, analyst for analysis, writer for drafting reports."
+        ),
+    )
+    return create_openbox_deep_agent_handler(
+        graph=_graph,
+        api_url=openbox_url,
+        api_key=openbox_api_key,
+        agent_name="ResearchBot",
+        validate=True,
+        on_api_error="fail_open",
+        known_subagents=["researcher", "analyst", "writer", "general-purpose"],
+        guard_interrupt_on_conflict=True,
+        skip_chain_types={
+            "model", "tools",
+            "PatchToolCallsMiddleware.before_agent",
+            "TodoListMiddleware.after_model",
+            "FilesystemMiddleware.before_agent",
+            "SummarizationMiddleware.before_agent",
+            "AnthropicPromptCachingMiddleware.before_agent",
+            "SubAgentMiddleware.before_agent",
+            "MemoryMiddleware.before_agent",
+            "SkillsMiddleware.before_agent",
+        },
+        tool_type_map={"search_web": "http", "export_data": "http"},
+        hitl={"enabled": True, "poll_interval_ms": 5_000, "max_wait_ms": 300_000},
+    )
+
 
 # ─── Mock data store ──────────────────────────────────────────────
 
@@ -277,6 +388,9 @@ async def export_data(destination: str, dataset: str) -> str:
     ])
 
 
+# ─── Module-level graph instance (for langgraph dev) ─────────────
+graph = _build_graph()
+
 # ─── Governance error handler ─────────────────────────────────────
 
 def _handle_governance_error(err: Exception) -> dict[str, Any]:
@@ -430,7 +544,7 @@ async def main() -> None:
 
     # ── OpenBox DeepAgent handler ─────────────────────────────────
     try:
-        governed = await create_openbox_deep_agent_handler(
+        governed = create_openbox_deep_agent_handler(
             graph=graph,
             api_url=openbox_url,
             api_key=openbox_api_key,

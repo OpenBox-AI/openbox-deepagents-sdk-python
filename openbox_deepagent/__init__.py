@@ -1,56 +1,91 @@
 """
-OpenBox DeepAgents SDK — extends openbox-langgraph-sdk for DeepAgents graphs.
+OpenBox DeepAgents SDK — governance middleware for DeepAgents graphs.
 
-Adds DeepAgents-specific governance:
-- Subagent detection via the `task` tool's `subagent_type` argument
-- interrupt_on conflict guard (DeepAgents HumanInTheLoopMiddleware vs OpenBox HITL)
-- Built-in tool classification for Rego policy targeting
-
-Example:
-    >>> from openbox_deepagent import create_openbox_deep_agent_handler
-    >>> from deepagents.graph import create_deep_agent
-    >>>
-    >>> # IMPORTANT: do NOT pass interrupt_on to create_deep_agent when using OpenBox HITL
-    >>> agent = create_deep_agent(model="claude-sonnet-4-5", tools=[my_tool])
-    >>>
-    >>> governed = await create_openbox_deep_agent_handler(
-    ...     graph=agent,
+Usage:
+    >>> from openbox_deepagent import create_openbox_middleware
+    >>> middleware = create_openbox_middleware(
     ...     api_url=os.environ["OPENBOX_URL"],
     ...     api_key=os.environ["OPENBOX_API_KEY"],
-    ...     agent_name="MyDeepAgent",
-    ...     known_subagents=["general-purpose", "researcher"],
+    ...     agent_name="MyBot",
+    ...     known_subagents=["researcher"],
     ... )
-    >>> result = await governed.ainvoke(
-    ...     {"messages": [{"role": "user", "content": "Research LangGraph"}]},
-    ...     config={"configurable": {"thread_id": "session-abc"}},
-    ... )
+    >>> agent = create_deep_agent(model="gpt-4o-mini", middleware=[middleware])
+    >>> result = await agent.ainvoke({"messages": [...]})
 """
 
-from openbox_deepagent.deepagent_handler import (
-    DEEPAGENT_BUILTIN_TOOLS,
-    DEEPAGENT_SUBAGENT_TOOL,
-    OpenBoxDeepAgentHandler,
-    OpenBoxDeepAgentHandlerOptions,
-    create_openbox_deep_agent_handler,
-)
+from importlib.metadata import PackageNotFoundError, version
 
-# Re-export the full langgraph SDK surface
-from openbox_langgraph import *  # noqa: F401, F403
+# Re-export the openbox-langgraph-sdk public surface
 from openbox_langgraph import (
+    ApprovalExpiredError,
+    ApprovalRejectedError,
+    ApprovalTimeoutError,
+    GovernanceBlockedError,
+    GovernanceConfig,
+    GovernanceHaltError,
+    GovernanceVerdictResponse,
+    GuardrailsValidationError,
+    LangChainGovernanceEvent,
+    LangGraphStreamEvent,
+    OpenBoxAuthError,
+    OpenBoxError,
+    OpenBoxInsecureURLError,
     OpenBoxLangGraphHandler,
     OpenBoxLangGraphHandlerOptions,
+    OpenBoxNetworkError,
+    Verdict,
     create_openbox_graph_handler,
+    get_global_config,
+    initialize,
+    rfc3339_now,
+    safe_serialize,
 )
 
+from openbox_deepagent.middleware import OpenBoxMiddleware, OpenBoxMiddlewareOptions
+from openbox_deepagent.middleware_factory import create_openbox_middleware
+from openbox_deepagent.subagent_resolver import (
+    DEEPAGENT_BUILTIN_TOOLS,
+    DEEPAGENT_SUBAGENT_TOOL,
+)
+
+try:
+    __version__ = version("openbox-deepagent-sdk-python")
+except PackageNotFoundError:
+    __version__ = "unknown"
+
 __all__ = [
-    # DeepAgents-specific
-    "OpenBoxDeepAgentHandler",
-    "OpenBoxDeepAgentHandlerOptions",
-    "create_openbox_deep_agent_handler",
+    # Shared
     "DEEPAGENT_BUILTIN_TOOLS",
     "DEEPAGENT_SUBAGENT_TOOL",
-    # Base handler re-exports
+    "ApprovalExpiredError",
+    "ApprovalRejectedError",
+    "ApprovalTimeoutError",
+    "GovernanceBlockedError",
+    "GovernanceConfig",
+    "GovernanceHaltError",
+    "GovernanceVerdictResponse",
+    "GuardrailsValidationError",
+    "LangChainGovernanceEvent",
+    "LangGraphStreamEvent",
+    "OpenBoxAuthError",
+    # Errors
+    "OpenBoxError",
+    "OpenBoxInsecureURLError",
+    # Base handler
     "OpenBoxLangGraphHandler",
     "OpenBoxLangGraphHandlerOptions",
+    # Middleware API
+    "OpenBoxMiddleware",
+    "OpenBoxMiddlewareOptions",
+    "OpenBoxNetworkError",
+    # Types
+    "Verdict",
+    # Version
+    "__version__",
     "create_openbox_graph_handler",
+    "create_openbox_middleware",
+    "get_global_config",
+    "initialize",
+    "rfc3339_now",
+    "safe_serialize",
 ]

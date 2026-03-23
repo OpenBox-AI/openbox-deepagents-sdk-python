@@ -678,12 +678,12 @@ The sentinel is only appended when `tool_type` or `subagent_name` is resolved �
 
 ### 6.4 Why `not input.hook_trigger` is required in all REQUIRE_APPROVAL / BLOCK rules
 
-ResearchBot's `search_web` and `export_data` tools make outbound HTTP calls. The OpenBox hook layer intercepts these via `httpx` telemetry and sends `ActivityStarted` events with `hook_trigger: true`. Without the `not input.hook_trigger` guard:
+ResearchBot's `search_web` and `export_data` tools make outbound HTTP calls. When the SDK detects a new span (e.g., the HTTP request), it sends a second `ActivityStarted` event with `hook_trigger: true`. Without the `not input.hook_trigger` guard:
 
-1. `export_data` is called → `ActivityStarted/export_data` (no `hook_trigger`) → policy fires → REQUIRE_APPROVAL ✅
-2. `export_data` makes an HTTP POST → `ActivityStarted/export_data` (with `hook_trigger`) → policy fires **again** → second REQUIRE_APPROVAL ❌
+1. `export_data` is called → `ActivityStarted/export_data` (`hook_trigger: false`) → policy fires → REQUIRE_APPROVAL ✅
+2. `export_data` makes an HTTP POST → new span detected → `ActivityStarted/export_data` (`hook_trigger: true`) → policy fires **again** → second REQUIRE_APPROVAL ❌
 
-The guard prevents double-triggering by ensuring policy rules only evaluate the direct tool invocation, not the hook-level HTTP observation.
+The guard prevents double-triggering by ensuring policy rules only evaluate the direct tool invocation, not the span-triggered event.
 
 ### 6.5 Debugging
 
