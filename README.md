@@ -6,14 +6,15 @@
 
 Add real-time governance to any [DeepAgents](https://github.com/langchain-ai/deepagents) application — powered by [OpenBox](https://openbox.ai).
 
-This package extends [`openbox-langgraph-sdk`](../sdk-langgraph-python) with three things DeepAgents specifically needs: **per-subagent policy targeting** (govern the `writer` subagent differently from `researcher`), **HITL conflict detection** (prevent clashes with DeepAgents' own `interrupt_on`), and **built-in `a2a` tool classification** for subagent dispatches.
+This package extends [`openbox-langgraph-sdk-python`](https://pypi.org/project/openbox-langgraph-sdk-python/) with three things DeepAgents specifically needs: **per-subagent policy targeting** (govern the `writer` subagent differently from `researcher`), **HITL conflict detection** (prevent clashes with DeepAgents' own `interrupt_on`), and **built-in `a2a` tool classification** for subagent dispatches.
 
-> **New to OpenBox?** Start with the [`openbox-langgraph-sdk` README](../sdk-langgraph-python/README.md). It covers policies, guardrails, HITL, error handling, and debugging. This document covers only what's different or additional for DeepAgents.
+> **New to OpenBox?** Start with the [`openbox-langgraph-sdk-python` README](https://github.com/OpenBox-AI/openbox-langgraph-sdk-python). It covers policies, guardrails, HITL, error handling, and debugging. This document covers only what's different or additional for DeepAgents.
 
 ---
 
 ## Table of Contents
 
+- [Architecture](#architecture)
 - [How DeepAgents governance works](#how-deepagents-governance-works)
 - [Installation](#installation)
 - [Quickstart](#quickstart)
@@ -33,6 +34,39 @@ This package extends [`openbox-langgraph-sdk`](../sdk-langgraph-python) with thr
 
 ---
 
+## Architecture
+
+The SDK implements LangChain's `AgentMiddleware` interface, hooking into the agent lifecycle at four points:
+
+```
+invoke() → abefore_agent  (SignalReceived → WorkflowStarted → pre-screen guardrails)
+         → awrap_model_call (LLMStarted → PII redaction → model → LLMCompleted)
+         → awrap_tool_call  (ToolStarted → tool execution with OTel spans → ToolCompleted)
+         → aafter_agent     (WorkflowCompleted + SpanProcessor cleanup)
+```
+
+### Core modules
+
+| Module | Purpose |
+|---|---|
+| `middleware_factory.py` | `create_openbox_middleware()` factory — validates API key, sets global config, returns `OpenBoxMiddleware` |
+| `middleware.py` | `OpenBoxMiddleware` class — sync/async hooks, OTel span management, sync-to-async bridge |
+| `middleware_hooks.py` | Stateless hook implementations — governance event construction, PII redaction, HITL retry loops |
+| `subagent_resolver.py` | Subagent detection — extracts `subagent_type` from `task` tool args, HITL conflict detection |
+
+### Key design decisions
+
+- **Pre-screen optimization**: The first `LLMStarted` fires in `abefore_agent` and caches the response. `awrap_model_call` reuses it for the first LLM call to avoid a duplicate governance round-trip.
+- **Tool classification**: `_resolve_tool_type()` checks `tool_type_map` first, falls back to `"a2a"` for subagent tools, and appends an `__openbox` sentinel to `activity_input` for Rego policy targeting.
+- **OTel span bridging**: LangGraph spawns `asyncio.Task`s for tool/LLM execution, breaking OTel trace context. The SDK manually creates spans and registers trace IDs with the `WorkflowSpanProcessor`.
+- **Sync mode**: When `invoke()` (not `ainvoke()`) is used, governance calls switch to sync `httpx.Client` via `evaluate_event_sync()` to avoid context cancellation from `asyncio.run()` teardown.
+
+### Dependency on openbox-langgraph-sdk-python
+
+Heavy dependency — imports `GovernanceClient`, `GovernanceConfig`, `WorkflowSpanProcessor`, `enforce_verdict`, `poll_until_decision`, all error types, and `LangChainGovernanceEvent`. Changes to that package's internals directly affect this one.
+
+---
+
 ## How DeepAgents governance works
 
 DeepAgents dispatches subagents through the built-in `task` tool:
@@ -42,7 +76,7 @@ task(description="Research quantum computing", subagent_type="researcher")
 task(description="Write a technical report", subagent_type="writer")
 ```
 
-The problem: subagents execute *inside* the `task` tool body, so their internal events are invisible to the outer LangGraph event stream. Only the `task` tool's `on_tool_start` is observable.
+The problem: subagents execute *inside* the `task` tool body, so their internal events are invisible to the outer LangGraph event stream. Only the `task` tool's start event is observable.
 
 The SDK solves this by reading `subagent_type` from the `task` input before the call executes and embedding it as `__openbox` metadata in the governance event. Your Rego policy then has a clean, explicit handle to target specific subagent types:
 
@@ -51,7 +85,7 @@ Your agent                    SDK                           OpenBox Core
 ──────────                    ───                           ───────────
 task(subagent_type="writer")
   │
-  └─ on_tool_start ────────► ActivityStarted               Policy engine
+  └─ wrap_tool_call ────────► ToolStarted                   Policy engine
                               activity_type="task"    ───► input.activity_type == "task"
                               activity_input=[                some item in input.activity_input
                                 {description, subagent_type},  item["__openbox"].subagent_name
@@ -67,8 +101,6 @@ task(subagent_type="writer")
 
 Your graph code is untouched.
 
-> **`create_openbox_deep_agent_handler` is synchronous.** Do not `await` it.
-
 ---
 
 ## Installation
@@ -77,7 +109,7 @@ Your graph code is untouched.
 pip install openbox-deepagent-sdk-python
 ```
 
-**Requirements:** Python 3.11+, `openbox-langgraph-sdk-python >= 0.1.0`, `langgraph >= 0.2`, `deepagents`
+**Requirements:** Python 3.11+, `openbox-langgraph-sdk-python >= 0.1.0`, `langchain >= 0.3.0`, `langgraph >= 0.2`
 
 ---
 
@@ -127,7 +159,6 @@ agent = create_deep_agent(
 )
 
 async def main():
-    # Invoke directly — no handler wrapper needed
     result = await agent.ainvoke(
         {"messages": [{"role": "user", "content": "Research recent LangGraph papers"}]},
         config={"configurable": {"thread_id": "session-001"}},
@@ -137,17 +168,14 @@ async def main():
 asyncio.run(main())
 ```
 
-> **Migrating from `create_openbox_deep_agent_handler`?** The handler-based approach is deprecated. See [Legacy handler](#legacy-handler-based-approach) below.
-
 ---
 
 ## Configuration reference
 
-`create_openbox_deep_agent_handler` accepts the following keyword arguments:
+`create_openbox_middleware()` accepts the following keyword arguments:
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `graph` | `CompiledGraph` | **required** | Compiled LangGraph graph from `create_deep_agent()` |
 | `api_url` | `str` | **required** | Base URL of your OpenBox Core instance |
 | `api_key` | `str` | **required** | API key (`obx_live_*` or `obx_test_*`) |
 | `agent_name` | `str` | `None` | Agent name as configured in the dashboard. Used as `workflow_type` on all governance events — **must match exactly** for policies and Behavior Rules to fire |
@@ -156,14 +184,13 @@ asyncio.run(main())
 | `on_api_error` | `str` | `"fail_open"` | `"fail_open"` (allow on error) or `"fail_closed"` (block on error) |
 | `governance_timeout` | `float` | `30.0` | HTTP timeout in seconds for governance calls |
 | `session_id` | `str` | `None` | Optional session identifier |
-| `hitl` | `dict` | `{}` | Human-in-the-loop config (see [HITL](#human-in-the-loop-hitl)) |
-| `guard_interrupt_on_conflict` | `bool` | `True` | Raise if `interrupt_on` and OpenBox HITL are both enabled |
 | `send_chain_start_event` | `bool` | `True` | Send `WorkflowStarted` event |
 | `send_chain_end_event` | `bool` | `True` | Send `WorkflowCompleted` event |
 | `send_llm_start_event` | `bool` | `True` | Send `LLMStarted` event (enables prompt guardrails + PII redaction) |
 | `send_llm_end_event` | `bool` | `True` | Send `LLMCompleted` event |
+| `send_tool_start_event` | `bool` | `True` | Send `ToolStarted` event |
+| `send_tool_end_event` | `bool` | `True` | Send `ToolCompleted` event |
 | `tool_type_map` | `dict[str, str]` | `{}` | Map tool names to semantic types for classification |
-| `skip_chain_types` | `set[str]` | `set()` | Chain node names to skip governance for |
 | `skip_tool_types` | `set[str]` | `set()` | Tool names to skip governance for entirely |
 | `sqlalchemy_engine` | `Engine` | `None` | SQLAlchemy Engine instance to instrument for DB governance. Required when the engine is created before the middleware (see [Database governance](#database-governance)) |
 
@@ -173,13 +200,13 @@ asyncio.run(main())
 
 ### Policies (OPA / Rego)
 
-Policies live in the OpenBox dashboard and are written in [Rego](https://www.openpolicyagent.org/docs/latest/policy-language/). Before every tool call the SDK sends an `ActivityStarted` event — your policy evaluates the payload and returns a decision.
+Policies live in the OpenBox dashboard and are written in [Rego](https://www.openpolicyagent.org/docs/latest/policy-language/). Before every tool call the SDK sends a `ToolStarted` event — your policy evaluates the payload and returns a decision.
 
 **Fields available in `input`:**
 
 | Field | Type | Description |
 |---|---|---|
-| `input.event_type` | `string` | `"ActivityStarted"` or `"ActivityCompleted"` |
+| `input.event_type` | `string` | `"ToolStarted"`, `"ToolCompleted"`, `"LLMStarted"`, etc. |
 | `input.activity_type` | `string` | Tool name (e.g. `"search_web"`, `"task"`) |
 | `input.activity_input` | `array` | Tool arguments + optional `__openbox` metadata |
 | `input.workflow_type` | `string` | Your `agent_name` |
@@ -200,7 +227,7 @@ default result = {"decision": "CONTINUE", "reason": null}
 restricted_terms := {"nuclear weapon", "bioweapon", "chemical weapon", "malware synthesis"}
 
 result := {"decision": "BLOCK", "reason": "Search blocked: restricted research topic."} if {
-    input.event_type == "ActivityStarted"
+    input.event_type == "ToolStarted"
     input.activity_type == "search_web"
     not input.hook_trigger
     count(input.activity_input) > 0
@@ -222,7 +249,7 @@ result := {"decision": "BLOCK", "reason": "Search blocked: restricted research t
 | `REQUIRE_APPROVAL` | Agent pauses; human must approve or reject in dashboard |
 | `HALT` | `GovernanceHaltError` raised — session terminated |
 
-> **Always include `not input.hook_trigger`** in `BLOCK` and `REQUIRE_APPROVAL` rules. When a tool makes an outbound HTTP call, the SDK fires a second `ActivityStarted` with `hook_trigger: true`. Without this guard, the rule fires once for the tool call and once for every HTTP request it makes.
+> **Always include `not input.hook_trigger`** in `BLOCK` and `REQUIRE_APPROVAL` rules. When a tool makes an outbound HTTP call, the SDK fires a second event with `hook_trigger: true`. Without this guard, the rule fires once for the tool call and once for every HTTP request it makes.
 
 ---
 
@@ -252,7 +279,7 @@ OpenBox Core forwards `activity_input` to OPA unchanged — **no Core changes ne
 ```rego
 # All tasks dispatched to the writer subagent require human approval
 result := {"decision": "REQUIRE_APPROVAL", "reason": "Writer subagent tasks require approval."} if {
-    input.event_type == "ActivityStarted"
+    input.event_type == "ToolStarted"
     input.activity_type == "task"
     not input.hook_trigger
     some item in input.activity_input
@@ -265,7 +292,7 @@ result := {"decision": "REQUIRE_APPROVAL", "reason": "Writer subagent tasks requ
 
 ```rego
 result := {"decision": "BLOCK", "reason": "Subagent calls disabled outside business hours."} if {
-    input.event_type == "ActivityStarted"
+    input.event_type == "ToolStarted"
     input.activity_type == "task"
     not input.hook_trigger
     some item in input.activity_input
@@ -296,61 +323,31 @@ Supported guardrail types:
 | Toxicity | `3` | Toxic language |
 | Ban words | `4` | Custom word/phrase blocklist |
 
-> DeepAgents fires `on_chat_model_start` for every LLM call — including internal subagent calls that contain only system or tool messages. The SDK automatically skips those (no user-turn content = nothing to screen), so you won't hit guardrail parse errors from subagent-internal LLM invocations.
+> The SDK automatically skips governance for LLM calls with empty prompts (e.g. subagent-internal LLM calls with only system/tool messages), preventing guardrail parse errors.
 
 ---
 
 ### Human-in-the-loop (HITL)
 
-When a policy returns `REQUIRE_APPROVAL`, the agent pauses and polls OpenBox until a human approves or rejects from the dashboard.
-
-```python
-governed = create_openbox_deep_agent_handler(
-    graph=agent,
-    api_url=os.environ["OPENBOX_URL"],
-    api_key=os.environ["OPENBOX_API_KEY"],
-    agent_name="ResearchBot",
-    known_subagents=["researcher", "writer", "general-purpose"],
-    hitl={
-        "enabled": True,
-        "poll_interval_ms": 5_000,   # check every 5 seconds
-        "max_wait_ms": 300_000,      # timeout after 5 minutes
-    },
-)
-```
-
-**HITL config options:**
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `enabled` | `bool` | `False` | Enable HITL polling |
-| `poll_interval_ms` | `int` | `5000` | How often to poll for a decision (ms) |
-| `max_wait_ms` | `int` | `300000` | Total wait before `ApprovalTimeoutError` (ms) |
-| `skip_tool_types` | `set[str]` | `set()` | Tools that never wait for HITL |
+When a policy returns `REQUIRE_APPROVAL`, the agent pauses and polls OpenBox until a human approves or rejects from the dashboard. The SDK handles this automatically — no additional configuration needed beyond the policy.
 
 **On approval:** tool or subagent execution continues normally.
 **On rejection:** `ApprovalRejectedError` is raised → re-raised as `GovernanceHaltError`.
-**On timeout:** `ApprovalTimeoutError` is raised.
+**On expiry:** `ApprovalExpiredError` is raised → re-raised as `GovernanceHaltError`.
+
+The HITL retry loop supports multiple approval rounds — if a tool triggers multiple governance hooks (e.g. httpx + file I/O), each gets its own approval cycle.
 
 #### Conflict with DeepAgents `interrupt_on`
 
 DeepAgents has its own interrupt mechanism via `interrupt_on` (`HumanInTheLoopMiddleware`). Using both OpenBox HITL and `interrupt_on` simultaneously causes double-pausing and unpredictable execution.
 
-The SDK detects this at construction time and raises a `ValueError`:
-
-```
-[OpenBox] DeepAgents graph has interrupt_on configured AND OpenBox HITL is enabled.
-These conflict — OpenBox must own the HITL flow.
-Remove interrupt_on from create_deep_agent, or set guard_interrupt_on_conflict=False to suppress this check.
-```
-
 If you want OpenBox to own HITL (which gives you the full dashboard + audit trail), remove `interrupt_on`:
 
 ```python
-# ✅ OpenBox owns HITL
+# OpenBox owns HITL
 agent = create_deep_agent(model="gpt-4o-mini", tools=[...], subagents=[...])
 
-# ❌ conflict
+# conflict — don't do this
 agent = create_deep_agent(model="gpt-4o-mini", tools=[...], interrupt_on=["task"])
 ```
 
@@ -358,11 +355,11 @@ agent = create_deep_agent(model="gpt-4o-mini", tools=[...], interrupt_on=["task"
 
 ### Behavior Rules (AGE)
 
-> ⚠️ **Read [Known Limitations — Behavior Rules](#behavior-rules-count-task-dispatches-not-subagent-tool-calls) before setting these up.** The semantics are materially different from the Temporal SDK, especially for DeepAgents.
+> **Read [Known Limitations — Behavior Rules](#behavior-rules-count-task-dispatches-not-subagent-tool-calls) before setting these up.** The semantics are materially different from the Temporal SDK, especially for DeepAgents.
 
 Behavior Rules detect patterns across tool call sequences within a session — rate limits, unusual sequences, repeated high-risk dispatches. They're configured in the dashboard and enforced by the OpenBox Activity Governance Engine (AGE).
 
-The SDK instruments `httpx` at startup (one-time idempotent patch). Any `httpx` call a tool makes is captured as a span and attached to that tool's `ActivityCompleted` event.
+The SDK instruments `httpx` at startup (one-time idempotent patch). Any `httpx` call a tool makes is captured as a span and attached to that tool's `ToolCompleted` event.
 
 ---
 
@@ -371,8 +368,9 @@ The SDK instruments `httpx` at startup (one-time idempotent patch). Any `httpx` 
 Map your non-subagent tools to semantic types so your Rego policies can target whole categories instead of listing every tool name.
 
 ```python
-governed = create_openbox_deep_agent_handler(
-    graph=agent,
+middleware = create_openbox_middleware(
+    api_url=os.environ["OPENBOX_URL"],
+    api_key=os.environ["OPENBOX_API_KEY"],
     agent_name="ResearchBot",
     known_subagents=["researcher", "writer", "general-purpose"],
     tool_type_map={
@@ -380,7 +378,6 @@ governed = create_openbox_deep_agent_handler(
         "export_data": "http",
         "query_db":    "database",
     },
-    ...
 )
 ```
 
@@ -398,7 +395,7 @@ Rego can match on it:
 
 ```rego
 result := {"decision": "REQUIRE_APPROVAL", "reason": "HTTP calls require approval."} if {
-    input.event_type == "ActivityStarted"
+    input.event_type == "ToolStarted"
     not input.hook_trigger
     some item in input.activity_input
     item["__openbox"].tool_type == "http"
@@ -436,7 +433,7 @@ middleware = create_openbox_middleware(
 )
 ```
 
-Without `sqlalchemy_engine=`, only engines created **after** middleware initialization are instrumented. Check startup logs for `Instrumented: sqlalchemy (existing engine)` vs `Instrumented: sqlalchemy (future engines)` to confirm.
+Without `sqlalchemy_engine=`, only engines created **after** middleware initialization are instrumented.
 
 ---
 
@@ -450,11 +447,11 @@ from openbox_deepagent import (
     GovernanceHaltError,
     GuardrailsValidationError,
     ApprovalRejectedError,
-    ApprovalTimeoutError,
+    ApprovalExpiredError,
 )
 
 try:
-    result = await governed.ainvoke({"messages": [...]}, config=...)
+    result = await agent.ainvoke({"messages": [...]}, config=...)
 except GovernanceBlockedError as e:
     # Policy returned BLOCK — tool or subagent dispatch did not execute
     print(f"Blocked: {e}")
@@ -466,8 +463,8 @@ except GuardrailsValidationError as e:
     print(f"Guardrail: {e}")
 except ApprovalRejectedError as e:
     print(f"Rejected by reviewer: {e}")
-except ApprovalTimeoutError as e:
-    print(f"HITL timed out: {e}")
+except ApprovalExpiredError as e:
+    print(f"HITL expired: {e}")
 ```
 
 | Exception | Raised when |
@@ -476,57 +473,12 @@ except ApprovalTimeoutError as e:
 | `GovernanceHaltError` | Policy returned `HALT`, or a HITL decision was rejected or expired |
 | `GuardrailsValidationError` | A guardrail fired on the user prompt |
 | `ApprovalRejectedError` | A human explicitly rejected a `REQUIRE_APPROVAL` decision |
-| `ApprovalTimeoutError` | HITL polling exceeded `max_wait_ms` |
+| `ApprovalExpiredError` | HITL approval expired server-side |
 | `OpenBoxAuthError` | API key is invalid or unauthorized |
 
 ---
 
 ## Advanced usage
-
-### Streaming
-
-Use `astream_governed` to stream graph updates with governance applied inline:
-
-```python
-async for chunk in governed.astream_governed(
-    {"messages": [{"role": "user", "content": "Research quantum computing"}]},
-    config={"configurable": {"thread_id": "session-001"}},
-    stream_mode="values",
-):
-    process(chunk)
-```
-
-`astream` and `astream_events` are also available as thin proxies, useful for `langgraph dev` and other tooling that expects a `CompiledStateGraph`.
-
-### `langgraph dev` compatibility
-
-Export the governed handler as a module-level variable:
-
-```python
-# agent.py
-import os
-from deepagents import create_deep_agent
-from openbox_deepagent import create_openbox_deep_agent_handler
-
-_agent = create_deep_agent(model="...", tools=[...], subagents=[...])
-
-graph = create_openbox_deep_agent_handler(
-    graph=_agent,
-    api_url=os.environ["OPENBOX_URL"],
-    api_key=os.environ["OPENBOX_API_KEY"],
-    agent_name="ResearchBot",
-    known_subagents=["researcher", "writer", "general-purpose"],
-)
-```
-
-```json
-// langgraph.json
-{
-  "graphs": {
-    "agent": "./agent.py:graph"
-  }
-}
-```
 
 ### Multi-turn sessions
 
@@ -535,68 +487,60 @@ Use a stable `thread_id` across turns. The SDK generates a fresh `workflow_id` p
 ```python
 config = {"configurable": {"thread_id": "user-42-session-7"}}
 
-await governed.ainvoke({"messages": [{"role": "user", "content": "Research LangGraph"}]}, config=config)
-await governed.ainvoke({"messages": [{"role": "user", "content": "Now write a report on it"}]}, config=config)
+await agent.ainvoke(
+    {"messages": [{"role": "user", "content": "Research LangGraph"}]},
+    config=config,
+)
+await agent.ainvoke(
+    {"messages": [{"role": "user", "content": "Now write a report on it"}]},
+    config=config,
+)
 ```
 
 ### Inspecting registered subagents
 
 ```python
-print(governed.get_known_subagents())
+print(middleware.get_known_subagents())
 # ['analyst', 'general-purpose', 'researcher', 'writer']
 ```
 
 ### `fail_closed` mode
 
 ```python
-governed = create_openbox_deep_agent_handler(
-    graph=agent,
+middleware = create_openbox_middleware(
+    api_url=os.environ["OPENBOX_URL"],
+    api_key=os.environ["OPENBOX_API_KEY"],
+    agent_name="ResearchBot",
     on_api_error="fail_closed",
-    ...
 )
 ```
 
-### Reducing governance noise from DeepAgents middleware nodes
+### Sync mode
 
-`create_deep_agent()` fires `on_chain_start` for every middleware node. None of these need governance — suppress them:
+The middleware supports both `ainvoke()` (async) and `invoke()` (sync). When using sync mode, governance calls automatically use sync `httpx.Client` and a cached thread pool to avoid `asyncio.run()` teardown issues.
 
 ```python
-governed = create_openbox_deep_agent_handler(
-    graph=agent,
-    skip_chain_types={
-        "model",
-        "tools",
-        "PatchToolCallsMiddleware.before_agent",
-        "TodoListMiddleware.after_model",
-        "FilesystemMiddleware.before_agent",
-        "SummarizationMiddleware.before_agent",
-        "AnthropicPromptCachingMiddleware.before_agent",
-        "SubAgentMiddleware.before_agent",
-        "MemoryMiddleware.before_agent",
-        "SkillsMiddleware.before_agent",
-    },
-    ...
-)
+# Async (preferred)
+result = await agent.ainvoke({"messages": [...]}, config=config)
+
+# Sync (also supported)
+result = agent.invoke({"messages": [...]}, config=config)
 ```
-
-Skipping `"tools"` or `"model"` does **not** suppress tool or LLM governance — those events come from `on_tool_start` and `on_chat_model_start` inside those nodes, which are separate.
-
-Run with `OPENBOX_DEBUG=1` and look for `[OBX_EVENT]` lines to find the exact node names your graph emits.
 
 ---
 
 ## Known limitations
 
-These constraints come from how DeepAgents and LangGraph work at runtime. The base limitations (Behavior Rules, `httpx`-only spans, `ainvoke` session scoping) are covered in the [openbox-langgraph-sdk README](../sdk-langgraph-python/README.md#known-limitations). These are the DeepAgents-specific additions.
+These constraints come from how DeepAgents and LangGraph work at runtime. The base limitations are covered in the [openbox-langgraph-sdk-python README](https://github.com/OpenBox-AI/openbox-langgraph-sdk-python). These are the DeepAgents-specific additions.
 
 ### Subagent internals are invisible to governance
 
-Subagents execute *inside* the `task` tool body via `subagent.invoke()`. Their internal tool calls and LLM calls are not surfaced in the outer `astream_events` stream. From the governance layer, the `task` call is a single atomic unit.
+Subagents execute *inside* the `task` tool body via `subagent.invoke()`. Their internal tool calls and LLM calls are not surfaced in the outer event stream. From the governance layer, the `task` call is a single atomic unit.
 
 **What this means concretely:**
-- A `search_web` call made by the `researcher` subagent is not a separate `ActivityStarted` event — you cannot write a Rego policy that targets it
+- A `search_web` call made by the `researcher` subagent is not a separate `ToolStarted` event — you cannot write a Rego policy that targets it
 - You cannot apply HITL to a tool call a subagent makes — only to the `task` dispatch itself
-- The `ActivityCompleted` for `task` carries the final output, but not a breakdown of what the subagent did internally
+- The `ToolCompleted` for `task` carries the final output, but not a breakdown of what the subagent did internally
 
 **What you can govern:**
 - Whether a specific subagent type is dispatched at all (`BLOCK` / `REQUIRE_APPROVAL` on `activity_type == "task"` with `subagent_name` matching)
@@ -604,13 +548,11 @@ Subagents execute *inside* the `task` tool body via `subagent.invoke()`. Their i
 
 **Workaround:** If you need to govern a specific tool call regardless of which subagent triggers it, add it to the outer agent's tool list as well. The outer agent's tool calls are fully governed.
 
-**Contrast with Temporal:** In the Temporal SDK, every activity — including ones inside a "subagent" — runs as an independent governed unit. DeepAgents has no equivalent. Subagent execution is opaque to the outer event stream.
-
 ---
 
 ### Behavior Rules count `task` dispatches, not subagent-internal tool calls
 
-The AGE sees `task(subagent_type="researcher")` as one `ActivityStarted` + one `ActivityCompleted`. The researcher then calling `search_web` five times internally is invisible.
+The AGE sees `task(subagent_type="researcher")` as one `ToolStarted` + one `ToolCompleted`. The researcher then calling `search_web` five times internally is invisible.
 
 A rule like "block if `search_web` exceeds 10 calls per session" only counts direct `search_web` calls from the outer agent — not from subagents.
 
@@ -623,7 +565,7 @@ A rule like "block if `search_web` exceeds 10 calls per session" only counts dir
 
 ### HTTP spans are captured for outer agent tools only
 
-The `httpx` instrumentation captures calls made during outer agent tool execution. HTTP calls inside subagent tool bodies run in a separate async context and are not captured as spans on the `task` `ActivityCompleted`.
+The `httpx` instrumentation captures calls made during outer agent tool execution. HTTP calls inside subagent tool bodies run in a separate async context and are not captured as spans on the `task` `ToolCompleted`.
 
 ---
 
@@ -633,33 +575,17 @@ Each `ainvoke` is a separate governance session with a new `workflow_id`. Behavi
 
 ---
 
-### Subagent model providers must be configured independently
-
-Each subagent can specify its own `model`. If a subagent uses a different provider from the outer agent (e.g. outer agent uses OpenAI, subagent uses Anthropic), you need the corresponding API key configured in your environment. The SDK doesn't validate subagent model configs at startup.
-
----
-
 ## Debugging
 
 ```bash
 OPENBOX_DEBUG=1 python agent.py
 ```
 
-This enables two log streams:
+This enables debug logging:
 
-**`[OBX_EVENT]`** — every raw LangGraph event (stderr):
-```
-[OBX_EVENT] on_chain_start        name='LangGraph'              node=None
-[OBX_EVENT] on_chain_start        name='SubAgentMiddleware...'  node='SubAgentMiddleware...'
-[OBX_EVENT] on_chat_model_start   name='ChatOpenAI'             node='model'
-[OBX_EVENT] on_tool_start         name='task'                   node='tools'
-[OBX_EVENT] on_tool_start         name='search_web'             node='tools'
-```
-
-**`[OpenBox Debug]`** — every governance request and response (stdout):
 ```
 [OpenBox Debug] governance request: {
-  "event_type": "ActivityStarted",
+  "event_type": "ToolStarted",
   "activity_type": "task",
   "workflow_type": "ResearchBot",
   "activity_input": [
@@ -674,37 +600,9 @@ This enables two log streams:
 **If things aren't working, check for these:**
 
 - `workflow_type` doesn't match your dashboard agent name → policies never fire
-- `subagent_name` is `"general-purpose"` when you expected something else → `subagent_type` was missing from the `task` input; look for a `task tool input missing subagent_type` warning in the debug output
+- `subagent_name` is `"general-purpose"` when you expected something else → `subagent_type` was missing from the `task` input; look for a `task tool_call missing subagent_type` warning in the debug output
 - A rule is double-triggering → you're missing `not input.hook_trigger` in your Rego
 - Warning at startup about `known_subagents` → you passed an empty list; include at least `["general-purpose"]`
-
----
-
-## Legacy handler-based approach
-
-> **Deprecated.** Use `create_openbox_middleware()` with `create_deep_agent(middleware=[...])` instead.
-
-The handler-based approach wraps the compiled graph and processes events via `astream_events`:
-
-```python
-from openbox_deepagent import create_openbox_deep_agent_handler
-
-agent = create_deep_agent(model=init_chat_model("openai:gpt-4o-mini"), tools=[...], subagents=[...])
-
-# Deprecated — emits DeprecationWarning
-governed = create_openbox_deep_agent_handler(
-    graph=agent,
-    api_url=os.environ["OPENBOX_URL"],
-    api_key=os.environ["OPENBOX_API_KEY"],
-    agent_name="ResearchBot",
-    known_subagents=["researcher", "analyst", "writer", "general-purpose"],
-)
-
-result = await governed.ainvoke(
-    {"messages": [{"role": "user", "content": "Research LangGraph papers"}]},
-    config={"configurable": {"thread_id": "session-001"}},
-)
-```
 
 ---
 
@@ -713,8 +611,9 @@ result = await governed.ainvoke(
 Contributions are welcome! Please open an issue before submitting a large pull request.
 
 ```bash
-git clone https://github.com/openbox-ai/openbox-langchain-sdk
-cd sdk-deepagent-python
+git clone https://github.com/OpenBox-AI/openbox-deepagents-sdk-python
+cd openbox-deepagent-sdk-python
 uv sync --extra dev
 uv run pytest tests/ -v
+uv run ruff check openbox_deepagent/ tests/
 ```
