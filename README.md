@@ -1,7 +1,7 @@
 # openbox-deepagents-sdk-python
 
-[![PyPI](https://img.shields.io/pypi/v/openbox-deepagents-sdk-python)](https://pypi.org/project/openbox-deepagents-sdk-python/)
-[![Python](https://img.shields.io/pypi/pyversions/openbox-deepagents-sdk-python)](https://pypi.org/project/openbox-deepagents-sdk-python/)
+[![PyPI](https://img.shields.io/pypi/v/openbox-deepagent-sdk-python)](https://pypi.org/project/openbox-deepagent-sdk-python/)
+[![Python](https://img.shields.io/pypi/pyversions/openbox-deepagent-sdk-python)](https://pypi.org/project/openbox-deepagent-sdk-python/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Add real-time governance to any [DeepAgents](https://github.com/langchain-ai/deepagents) application — powered by [OpenBox](https://openbox.ai).
@@ -106,7 +106,7 @@ Your graph code is untouched.
 ## Installation
 
 ```bash
-pip install openbox-deepagents-sdk-python
+pip install openbox-deepagent-sdk-python
 ```
 
 **Requirements:** Python 3.11+, `openbox-langgraph-sdk-python >= 0.1.0`, `langchain >= 0.3.0`, `langgraph >= 0.2`
