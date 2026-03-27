@@ -26,7 +26,7 @@ This directory contains developer documentation for the openbox-deepagent SDK. S
 - **[system-architecture.md](./system-architecture.md)** — How the governance system works
   - Middleware lifecycle and event flow
   - Subagent detection and classification
-  - Sync/async bridging and OTel span management
+  - Sync/async bridging and span management
   - HITL polling and error handling
 
 ### For Planning & Future Development

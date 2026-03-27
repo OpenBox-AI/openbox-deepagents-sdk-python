@@ -14,7 +14,7 @@
 | File | LOC | Purpose |
 |---|---|---|
 | `middleware.py` | 347 | Core middleware class + hook implementations |
-| `middleware_hooks.py` | 767 | Stateless hook logic (extractors, validators, OTel spans) |
+| `middleware_hooks.py` | 767 | Stateless hook logic (extractors, validators, trace spans) |
 | `test_middleware.py` | 884 | Test suite with mocked governance client |
 | `subagent_resolver.py` | 124 | Subagent detection + HITL conflict guards |
 | `middleware_factory.py` | 74 | Factory function + config initialization |
@@ -93,7 +93,7 @@ Root:
 - `_extract_messages_from_state()` — Extract message list from agent state
 - `_extract_message_content()` — Get first user message text
 - `_resolve_tool_type()` — Map tool name to semantic type
-- `_run_with_otel_context()` — Manual span creation across asyncio.Task boundaries
+- `_run_with_otel_context()` — Manual trace span creation across asyncio.Task boundaries
 - `_create_activity_input()` — Build activity_input array with optional `__openbox` metadata
 - Async governance evaluation: `evaluate_event()`, `evaluate_event_sync()`
 - HITL polling: `_poll_until_decision()`, `_enforce_verdict()`
@@ -174,7 +174,7 @@ openbox_deepagent
 │  ├─ Verdict enforcement (CONTINUE / BLOCK / REQUIRE_APPROVAL / HALT)
 │  ├─ HITL polling (if REQUIRE_APPROVAL)
 │  ├─ Tool execution
-│  ├─ OTel span registration
+│  ├─ Trace span registration
 │  └─ ToolCompleted event
 │
 └─ after_agent / aafter_agent
@@ -188,7 +188,7 @@ openbox_deepagent
 
 **Coverage**: Hook implementations, subagent detection, HITL polling, error handling
 
-**Mocking**: All governance client calls + OTel components mocked via `unittest.mock`
+**Mocking**: All governance client calls + tracing components mocked via `unittest.mock`
 
 **Framework**: `pytest-asyncio` with `asyncio_mode = "auto"`
 
@@ -301,7 +301,7 @@ def _run_async(self, coro: Coroutine) -> Any:
 | Linting | ruff | E, F, I, UP, B, C4, PIE, RUF rules |
 | Code style | ruff format | 100-char line length |
 | Async support | Full | Both invoke() + ainvoke() paths |
-| OTel integration | Manual | Span bridging across asyncio.Task boundaries |
+| Trace integration | Manual | Span bridging across asyncio.Task boundaries |
 
 ---
 

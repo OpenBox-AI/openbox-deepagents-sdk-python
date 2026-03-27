@@ -162,7 +162,7 @@ async def handle_before_agent(
 **Use sparingly.** Code should be self-documenting via naming + type hints.
 
 **When to use**:
-- Non-obvious algorithmic logic (e.g., OTel span bridging)
+- Non-obvious algorithmic logic (e.g., trace span bridging)
 - Workarounds for framework quirks (e.g., asyncio.run() teardown issues)
 - Performance-critical sections
 
@@ -170,7 +170,7 @@ async def handle_before_agent(
 
 **Example** (good):
 ```python
-# LangGraph spawns asyncio.Tasks that break OTel trace context.
+# LangGraph spawns asyncio.Tasks that break trace context.
 # Manually create spans and register with WorkflowSpanProcessor to maintain traceability.
 span = tracer.start_span(name)
 ```
@@ -252,7 +252,7 @@ def _run_async(self, coro: Coroutine) -> Any:
 
 ### Context Propagation
 
-**Manual OTel context attachment across asyncio.Task boundaries**:
+**Manual trace context attachment across asyncio.Task boundaries**:
 ```python
 # Bad: Context lost when LangGraph spawns new Task
 span = tracer.start_span("tool_call")  # ← lost in new Task
@@ -262,7 +262,7 @@ async def _run_with_otel_context(
     context: trace.Context,
     task: Coroutine,
 ) -> Any:
-    """Execute task with OTel context attached."""
+    """Execute task with trace context attached."""
     with trace.use_span(context):
         return await task
 ```
@@ -305,7 +305,7 @@ class TestBeforeAgent:
 
 ### Mocking Strategy
 
-**Mock governance client + OTel** — don't call real services:
+**Mock governance client + tracing** — don't call real services:
 
 ```python
 @pytest.fixture

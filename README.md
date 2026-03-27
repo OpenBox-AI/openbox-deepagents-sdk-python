@@ -41,7 +41,7 @@ The SDK implements LangChain's `AgentMiddleware` interface, hooking into the age
 ```
 invoke() → abefore_agent  (SignalReceived → WorkflowStarted → pre-screen guardrails)
          → awrap_model_call (LLMStarted → PII redaction → model → LLMCompleted)
-         → awrap_tool_call  (ToolStarted → tool execution with OTel spans → ToolCompleted)
+         → awrap_tool_call  (ToolStarted → tool execution with trace spans → ToolCompleted)
          → aafter_agent     (WorkflowCompleted + SpanProcessor cleanup)
 ```
 
@@ -50,7 +50,7 @@ invoke() → abefore_agent  (SignalReceived → WorkflowStarted → pre-screen g
 | Module | Purpose |
 |---|---|
 | `middleware_factory.py` | `create_openbox_middleware()` factory — validates API key, sets global config, returns `OpenBoxMiddleware` |
-| `middleware.py` | `OpenBoxMiddleware` class — sync/async hooks, OTel span management, sync-to-async bridge |
+| `middleware.py` | `OpenBoxMiddleware` class — sync/async hooks, span management, sync-to-async bridge |
 | `middleware_hooks.py` | Stateless hook implementations — governance event construction, PII redaction, HITL retry loops |
 | `subagent_resolver.py` | Subagent detection — extracts `subagent_type` from `task` tool args, HITL conflict detection |
 
@@ -58,7 +58,7 @@ invoke() → abefore_agent  (SignalReceived → WorkflowStarted → pre-screen g
 
 - **Pre-screen optimization**: The first `LLMStarted` fires in `abefore_agent` and caches the response. `awrap_model_call` reuses it for the first LLM call to avoid a duplicate governance round-trip.
 - **Tool classification**: `_resolve_tool_type()` checks `tool_type_map` first, falls back to `"a2a"` for subagent tools, and appends an `__openbox` sentinel to `activity_input` for Rego policy targeting.
-- **OTel span bridging**: LangGraph spawns `asyncio.Task`s for tool/LLM execution, breaking OTel trace context. The SDK manually creates spans and registers trace IDs with the `WorkflowSpanProcessor`.
+- **Span bridging**: LangGraph spawns `asyncio.Task`s for tool/LLM execution, breaking trace context. The SDK manually creates spans and registers trace IDs with the `WorkflowSpanProcessor`.
 - **Sync mode**: When `invoke()` (not `ainvoke()`) is used, governance calls switch to sync `httpx.Client` via `evaluate_event_sync()` to avoid context cancellation from `asyncio.run()` teardown.
 
 ### Dependency on openbox-langgraph-sdk-python
@@ -406,9 +406,9 @@ result := {"decision": "REQUIRE_APPROVAL", "reason": "HTTP calls require approva
 
 ### Database governance
 
-The SDK instruments database operations via OpenTelemetry. Supported libraries: psycopg2, asyncpg, mysql, pymysql, sqlite3, pymongo, redis, sqlalchemy.
+The SDK instruments database operations via automatic tracing. Supported libraries: psycopg2, asyncpg, mysql, pymysql, sqlite3, pymongo, redis, sqlalchemy.
 
-Install the instrumentor for your database:
+Install the instrumentation package for your database:
 
 ```bash
 pip install opentelemetry-instrumentation-sqlite3      # SQLite

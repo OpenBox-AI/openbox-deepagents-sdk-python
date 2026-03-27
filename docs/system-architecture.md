@@ -62,7 +62,7 @@ middleware = create_openbox_middleware(
 1. Validate options (api_url, api_key, agent_name)
 2. Call `openbox_langgraph.config.initialize()` to validate API key against Core
 3. Create `GovernanceClient` (async httpx-based HTTP client)
-4. Create `WorkflowSpanProcessor` (manages OTel spans)
+4. Create `WorkflowSpanProcessor` (manages trace spans)
 5. Return `OpenBoxMiddleware` instance
 
 **Per-invocation state** (reset on each ainvoke/invoke):
@@ -157,7 +157,7 @@ middleware = create_openbox_middleware(
 │  │     └─ If timeout: raise ApprovalTimeoutError
 │  │
 │  ├─ TOOL EXECUTION
-│  │  ├─ If OTel instrumented: create span (manual context attachment)
+│  │  ├─ If instrumented: create span (manual context attachment)
 │  │  ├─ Execute tool function
 │  │  ├─ Capture result/error
 │  │  └─ Finalize span
@@ -357,11 +357,11 @@ else:
 
 This prevents context cancellation from `asyncio.run()` teardown.
 
-## OTel Span Bridging
+## Span Bridging
 
 ### The Context Break Problem
 
-LangGraph spawns asyncio.Tasks for tool/LLM execution, breaking OTel trace context:
+LangGraph spawns asyncio.Tasks for tool/LLM execution, breaking trace context:
 
 ```python
 # Inside wrap_tool_call (has trace context A)
@@ -377,7 +377,7 @@ async def _run_with_otel_context(
     context: trace.Context,
     task: Coroutine,
 ) -> Any:
-    """Execute task with OTel context attached."""
+    """Execute task with trace context attached."""
     # Manually create span in current context
     span = tracer.start_span(name)
 
@@ -446,7 +446,7 @@ async def _poll_until_decision(
 ### HITL + interrupt_on Conflict
 
 DeepAgents has its own interrupt mechanism via `interrupt_on`. Using both simultaneously causes:
-- Double-pausing (OTel hook HITL + DeepAgents interrupt_on both pause)
+- Double-pausing (span hook HITL + DeepAgents interrupt_on both pause)
 - Unpredictable execution order
 - Confusion in dashboard state
 

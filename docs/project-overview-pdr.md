@@ -50,7 +50,7 @@ DeepAgents dispatches subagents through the built-in `task` tool. These execute 
 |---|---|---|
 | Python 3.11+ support | ✓ Complete | Minimal typing, native async syntax |
 | Async-first design | ✓ Complete | Primary path via `ainvoke()` with sync fallback via `invoke()` |
-| OTel instrumentation | ✓ Complete | Manual span bridging across asyncio.Task boundaries |
+| Trace instrumentation | ✓ Complete | Manual span bridging across asyncio.Task boundaries |
 | Error handling | ✓ Complete | 5 governance error types + fallback modes (fail-open/fail-closed) |
 | Test coverage | ✓ Complete | 884 LOC test suite covering middleware hooks, subagent detection, HITL |
 | Performance | ✓ In scope | Pre-screen optimization caches first LLM call response to avoid duplicate governance |
@@ -91,7 +91,7 @@ DeepAgents dispatches subagents through the built-in `task` tool. These execute 
 
 3. **Behavior Rules scope** — AGE tracks patterns **within single `ainvoke()` call only**. Cross-turn pattern detection not supported.
 
-4. **Event loop bridging** — LangGraph spawns asyncio.Tasks that break OTel trace context. SDK must manually create spans and register with `WorkflowSpanProcessor`.
+4. **Event loop bridging** — LangGraph spawns asyncio.Tasks that break trace context. SDK must manually create spans and register with `WorkflowSpanProcessor`.
 
 5. **Sync/async duality** — `invoke()` uses sync `httpx.Client` to avoid asyncio.run() teardown issues; `ainvoke()` uses async client.
 
@@ -121,7 +121,7 @@ DeepAgents dispatches subagents through the built-in `task` tool. These execute 
 
 3. **Subagent metadata embedding**: Append `__openbox` sentinel object to `activity_input`. OPA sees it natively without Core schema changes.
 
-4. **Manual OTel span bridging**: LangGraph's asyncio.Task execution breaks trace context. SDK manually creates spans, stores trace_id in WorkflowSpanProcessor, re-attaches on completion.
+4. **Manual span bridging**: LangGraph's asyncio.Task execution breaks trace context. SDK manually creates spans, stores trace_id in WorkflowSpanProcessor, re-attaches on completion.
 
 5. **Fail-open default**: Governance errors do not block execution by default. Set `on_api_error="fail_closed"` to block on network/auth failures.
 

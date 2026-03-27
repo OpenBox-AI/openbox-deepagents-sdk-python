@@ -4,3 +4,4 @@ test-agent/.env
 plans/
 .claude/
 .idea
+CLAUDE.md
