@@ -1,4 +1,4 @@
-# openbox-deepagent-sdk-python
+# openbox-deepagents-sdk-python
 
 [![PyPI](https://img.shields.io/pypi/v/openbox-deepagent-sdk-python)](https://pypi.org/project/openbox-deepagent-sdk-python/)
 [![Python](https://img.shields.io/pypi/pyversions/openbox-deepagent-sdk-python)](https://pypi.org/project/openbox-deepagent-sdk-python/)
@@ -117,7 +117,7 @@ pip install openbox-deepagent-sdk-python
 
 ### 1. Create an agent in the dashboard
 
-Sign in to [dashboard.openbox.ai](https://dashboard.openbox.ai), create an agent named `"ResearchBot"`, and copy your API key.
+Sign in to [platform.openbox.ai](https://platform.openbox.ai), create an agent named `"ResearchBot"`, and copy your API key.
 
 ### 2. Export credentials
 
@@ -355,7 +355,7 @@ agent = create_deep_agent(model="gpt-4o-mini", tools=[...], interrupt_on=["task"
 
 ### Behavior Rules (AGE)
 
-> **Read [Known Limitations — Behavior Rules](#behavior-rules-count-task-dispatches-not-subagent-tool-calls) before setting these up.** The semantics are materially different from the Temporal SDK, especially for DeepAgents.
+> **Read [Known Limitations — Behavior Rules](#behavior-rules-count-task-dispatches-not-subagent-internal-tool-calls) before setting these up.** The semantics are materially different from the Temporal SDK, especially for DeepAgents.
 
 Behavior Rules detect patterns across tool call sequences within a session — rate limits, unusual sequences, repeated high-risk dispatches. They're configured in the dashboard and enforced by the OpenBox Activity Governance Engine (AGE).
 
@@ -550,7 +550,7 @@ Subagents execute *inside* the `task` tool body via `subagent.invoke()`. Their i
 
 ---
 
-### Behavior Rules count `task` dispatches, not subagent-internal tool calls
+### Behavior Rules count task dispatches, not subagent-internal tool calls
 
 The AGE sees `task(subagent_type="researcher")` as one `ToolStarted` + one `ToolCompleted`. The researcher then calling `search_web` five times internally is invisible.
 
@@ -612,7 +612,7 @@ Contributions are welcome! Please open an issue before submitting a large pull r
 
 ```bash
 git clone https://github.com/OpenBox-AI/openbox-deepagents-sdk-python
-cd openbox-deepagent-sdk-python
+cd openbox-deepagents-sdk-python
 uv sync --extra dev
 uv run pytest tests/ -v
 uv run ruff check openbox_deepagent/ tests/
