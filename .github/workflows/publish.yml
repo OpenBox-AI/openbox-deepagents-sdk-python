@@ -311,6 +311,48 @@ jobs:
           args: >
             -Dsonar.sarifReportPaths=security-artifacts/trivy/trivy-release-results.sarif,security-artifacts/gitleaks/gitleaks-release-results.sarif
 
+      - name: SonarQube Quality Gate check
+        id: sonarqube_quality_gate
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        continue-on-error: true
+        uses: SonarSource/sonarqube-quality-gate-action@master
+        with:
+          pollingTimeoutSec: 600
+        env:
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
+
+      - name: Print SonarQube result
+        if: ${{ always() && env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        shell: bash
+        run: |
+          status="${{ steps.sonarqube_quality_gate.outputs.quality-gate-status }}"
+          
+          cat << 'EOF'
+          [QUALITY GATE] Checking NEW CODE conditions...
+          - FAIL IF: New Code Issues > 5
+          - FAIL IF: New Code Security Hotspots Reviewed < 100%
+          - FAIL IF: New Code Coverage < 60.0%
+          - FAIL IF: New Code Duplicated Lines > 3.0%
+
+          [QUALITY GATE] Checking OVERALL CODE conditions...
+          - FAIL IF: Overall High Severity Issues > 1
+          - FAIL IF: Overall Medium Severity Issues > 4
+          EOF
+
+          if [[ -z "${status}" ]]; then
+            status="UNKNOWN"
+          fi
+
+          echo "Quality Gate = ${status}"
+
+      - name: Fail job when SonarQube quality gate fails
+        if: ${{ always() && env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' && steps.sonarqube_quality_gate.outcome == 'failure' }}
+        shell: bash
+        run: |
+          echo "SonarQube Quality Gate failed."
+          exit 1            
+
   publish:
     name: Build and Publish
     runs-on: ubuntu-latest
