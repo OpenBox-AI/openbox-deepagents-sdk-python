@@ -51,6 +51,8 @@ jobs:
         run: uv sync --all-extras --dev
 
       - name: Run unit tests with coverage
+        id: unit_tests
+        continue-on-error: true
         run: |
           uv run pytest tests/ \
             --cov=openbox_deepagent \
@@ -60,15 +62,15 @@ jobs:
             -v
 
       - name: Upload coverage report
-        if: ${{ success() }}
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: coverage-xml
           path: coverage.xml
-          if-no-files-found: error
+          if-no-files-found: ignore
 
       - name: Upload coverage to Codecov
-        if: ${{ success() && env.CODECOV_TOKEN != '' }}
+        if: ${{ steps.unit_tests.outcome == 'success' && env.CODECOV_TOKEN != '' }}
         uses: codecov/codecov-action@v5
         with:
           files: ./coverage.xml
@@ -77,6 +79,12 @@ jobs:
           fail_ci_if_error: true
           verbose: true
           token: ${{ env.CODECOV_TOKEN }}
+
+      - name: Fail job when tests fail
+        if: ${{ steps.unit_tests.outcome == 'failure' }}
+        run: |
+          echo "Unit tests or coverage threshold failed."
+          exit 1
 
   build:
     name: Build
@@ -110,7 +118,7 @@ jobs:
   sonarqube:
     name: SonarQube
     runs-on: ubuntu-latest
-    if: ${{ needs.test.result == 'success' }}
+    if: ${{ always() && needs.test.result != 'cancelled' }}
     needs:
       - test
 
@@ -127,6 +135,7 @@ jobs:
 
       - name: Download coverage report
         if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: coverage-xml
