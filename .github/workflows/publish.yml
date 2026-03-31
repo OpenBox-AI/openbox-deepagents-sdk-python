@@ -2,70 +2,369 @@ name: Publish to PyPI
 
 on:
   push:
-    tags: ["*.*.*"]
+    tags:
+      - "*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-pypi-${{ github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  COVERAGE_THRESHOLD: "80"
+  SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+  GITLEAKS_VERSION: "8.30.0"
 
 jobs:
-  test:
+  release-governance:
+    name: Release Governance
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          python-version: "3.11"
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-
-      - name: Install dependencies
-        run: uv sync --all-extras
-
-      - name: Lint
-        run: uv run ruff check openbox_deepagent/
-
-      - name: Test
-        run: uv run pytest
-
-      - name: Verify tag matches package version
+      - name: Validate release tag format
+        env:
+          TAG_NAME: ${{ github.ref_name }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          PKG_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          if [ "$TAG" != "$PKG_VERSION" ]; then
-            echo "::error::Tag $TAG does not match pyproject.toml version $PKG_VERSION"
+          pattern='^[0-9]+\.[0-9]+\.[0-9]+$'
+          if [[ ! "${TAG_NAME}" =~ ${pattern} ]]; then
+            echo "Invalid release tag: ${TAG_NAME}"
+            echo "Expected format: <major>.<minor>.<patch> (for example: 1.2.3)"
             exit 1
           fi
 
-  build:
-    needs: test
+      - name: Verify governance files exist
+        run: |
+          required_files=(
+            ".github/CODEOWNERS"
+            ".gitleaks.toml"
+            "SECURITY.md"
+            "LICENSE"
+          )
+          for file in "${required_files[@]}"; do
+            if [ ! -f "${file}" ]; then
+              echo "Missing required governance file: ${file}"
+              exit 1
+            fi
+          done
+
+      - name: Verify CODEOWNERS coverage for protected files
+        run: |
+          declare -a required_patterns=(
+            "/.github/workflows/"
+            "/.github/CODEOWNERS"
+            "/.gitleaks.toml"
+            "/SECURITY.md"
+          )
+          for pattern in "${required_patterns[@]}"; do
+            if ! awk '!/^#/ && NF >= 2 {print $1}' .github/CODEOWNERS | grep -Fxq "${pattern}"; then
+              echo "Missing CODEOWNERS entry: ${pattern}"
+              exit 1
+            fi
+          done
+
+  release-quality:
+    name: Release Quality
     runs-on: ubuntu-latest
+    needs:
+      - release-governance
+      - release-security
+
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          python-version: "3.11"
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
 
-      - name: Build sdist and wheel
-        run: pip install build && python -m build
-
-      - uses: actions/upload-artifact@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          name: dist
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Run unit tests with coverage
+        run: |
+          uv run pytest tests/ \
+            --cov=openbox_deepagent \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing \
+            --cov-fail-under=${COVERAGE_THRESHOLD} \
+            -v
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-coverage-xml
+          path: coverage.xml
+          if-no-files-found: error
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install hatch twine
+
+      - name: Build package
+        run: hatch build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-python-dist
           path: dist/
+          if-no-files-found: error
+
+  release-security:
+    name: Release Security
+    runs-on: ubuntu-latest
+    needs:
+      - release-governance
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Set up Trivy
+        uses: aquasecurity/setup-trivy@e07451d2e059ed86c2870430ea286b3a9e0bf241
+        with:
+          cache: true
+          version: v0.69.2
+
+      - name: Run Trivy filesystem scan for console output
+        id: trivy_console
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          trivy fs . \
+            --scanners vuln,misconfig \
+            --vuln-type os,library \
+            --ignore-unfixed \
+            --severity HIGH,CRITICAL \
+            --include-dev-deps \
+            --format table \
+            --exit-code 1
+
+      - name: Run Trivy filesystem scan for SARIF
+        id: trivy_sarif
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          trivy fs . \
+            --scanners vuln,misconfig \
+            --vuln-type os,library \
+            --ignore-unfixed \
+            --severity HIGH,CRITICAL \
+            --include-dev-deps \
+            --format sarif \
+            --output trivy-release-results.sarif \
+            --exit-code 1
+
+      - name: Upload Trivy SARIF to GitHub Security
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-release-results.sarif
+          category: trivy-release
+
+      - name: Upload Trivy SARIF artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-release-results
+          path: trivy-release-results.sarif
+          if-no-files-found: error
+
+      - name: Run Gitleaks SARIF scan
+        id: gitleaks_scan
+        continue-on-error: true
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_VERSION: ${{ env.GITLEAKS_VERSION }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+
+      - name: Upload Gitleaks SARIF to GitHub Security
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif
+          category: gitleaks-release
+
+      - name: Upload Gitleaks SARIF artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-release-results
+          path: results.sarif
+          if-no-files-found: error
+
+      - name: Fail job when Trivy detects issues
+        if: always()
+        shell: bash
+        run: |
+          if [[ "${{ steps.trivy_console.outcome }}" == "failure" || "${{ steps.trivy_sarif.outcome }}" == "failure" ]]; then
+            echo "Trivy detected HIGH/CRITICAL findings."
+            exit 1
+          fi
+
+      - name: Fail job when Gitleaks detects issues
+        if: always()
+        shell: bash
+        run: |
+          if [[ "${{ steps.gitleaks_scan.outcome }}" == "failure" ]]; then
+            echo "Gitleaks detected potential secrets."
+            exit 1
+          fi
+
+  release-sonarqube:
+    name: Release SonarQube
+    runs-on: ubuntu-latest
+    needs:
+      - release-quality
+      - release-security
+
+    steps:
+      - name: Skip when SonarQube secrets are not configured
+        if: ${{ env.SONAR_TOKEN == '' || env.SONAR_HOST_URL == '' }}
+        run: echo "Skipping SonarQube because SONAR_TOKEN or SONAR_HOST_URL is not configured."
+
+      - name: Checkout repository
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Download coverage report
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: release-coverage-xml
+          path: .
+
+      - name: Download Trivy SARIF artifact
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: trivy-release-results
+          path: security-artifacts/trivy
+
+      - name: Download Gitleaks SARIF artifact
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: gitleaks-release-results
+          path: security-artifacts/gitleaks
+
+      - name: Set up Java
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Cache SonarQube packages
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+
+      - name: SonarQube scan
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        uses: SonarSource/sonarqube-scan-action@v7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.sarifReportPaths=security-artifacts/trivy/trivy-release-results.sarif,security-artifacts/gitleaks/gitleaks-release-results.sarif
 
   publish:
-    needs: build
+    name: Build and Publish
     runs-on: ubuntu-latest
-    environment: pypi
+    environment: release
+    needs:
+      - release-governance
+      - release-quality
+      - release-security
+      - release-sonarqube
     permissions:
+      contents: read
       id-token: write
+
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          name: dist
-          path: dist/
+          ref: ${{ github.ref_name }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install hatch twine
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-python-dist
+          path: dist
+
+      - name: Verify version matches tag
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          tag_version="${TAG_NAME}"
+          pkg_version="$(python - <<'PY'
+          import tomllib
+          with open("pyproject.toml", "rb") as fh:
+              print(tomllib.load(fh)["project"]["version"])
+          PY
+          )"
+          if [ "${tag_version}" != "${pkg_version}" ]; then
+            echo "Error: Tag version (${tag_version}) does not match package version (${pkg_version})"
+            exit 1
+          fi
+          echo "Version verified: ${pkg_version}"
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          verbose: true
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: twine upload dist/*
