@@ -1,5 +1,6 @@
 /openbox_deepagent/__pycache__
 test-agent/.env
+examples/content-builder-agent/.env
 /tests/__pycache__
 plans/
 .claude/

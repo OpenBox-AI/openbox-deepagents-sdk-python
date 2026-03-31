@@ -1,0 +1,19 @@
+[project]
+name = "content-builder-agent"
+version = "0.1.0"
+description = "Content writer agent demo for openbox-deepagent SDK"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.3.5",
+    "langchain-openai>=0.3.0",
+    "google-genai>=1.0.0",
+    "openbox-deepagent-sdk-python",
+    "pillow>=10.0.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.0",
+    "rich>=13.0.0",
+    "tavily-python>=0.5.0",
+]
+
+[tool.uv.sources]
+openbox-deepagent-sdk-python = { path = "../../", editable = true }
