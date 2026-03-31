@@ -60,6 +60,7 @@ jobs:
             -v
 
       - name: Upload coverage report
+        if: ${{ success() }}
         uses: actions/upload-artifact@v4
         with:
           name: coverage-xml
@@ -67,7 +68,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload coverage to Codecov
-        if: ${{ env.CODECOV_TOKEN != '' }}
+        if: ${{ success() && env.CODECOV_TOKEN != '' }}
         uses: codecov/codecov-action@v5
         with:
           files: ./coverage.xml
@@ -80,6 +81,7 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    if: ${{ needs.test.result == 'success' }}
     needs:
       - test
 
@@ -108,6 +110,7 @@ jobs:
   sonarqube:
     name: SonarQube
     runs-on: ubuntu-latest
+    if: ${{ needs.test.result == 'success' }}
     needs:
       - test
 
