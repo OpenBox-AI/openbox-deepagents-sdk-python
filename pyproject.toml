@@ -10,7 +10,7 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 dependencies = [
-    "openbox-langgraph-sdk-python>=0.1.0",
+    "openbox-langgraph-sdk-python>=0.2.0",
     "langchain>=0.3.0",
     "langchain-core>=0.3.0",
     "langgraph>=0.2.0",

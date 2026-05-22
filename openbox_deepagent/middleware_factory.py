@@ -28,6 +28,8 @@ def create_openbox_middleware(
     api_url: str,
     api_key: str,
     agent_name: str | None = None,
+    agent_did: str | None = None,
+    agent_private_key: str | None = None,
     governance_timeout: float = 30.0,
     validate: bool = True,
     known_subagents: list[str] | None = None,
@@ -42,6 +44,9 @@ def create_openbox_middleware(
         api_url: Base URL of your OpenBox Core instance.
         api_key: API key in ``obx_live_*`` or ``obx_test_*`` format.
         agent_name: Agent name as configured in the dashboard.
+        agent_did: Optional OpenBox agent DID. Falls back to ``OPENBOX_AGENT_DID``.
+        agent_private_key: Optional raw Ed25519 private key seed. Falls back to
+            ``OPENBOX_AGENT_PRIVATE_KEY``.
         governance_timeout: HTTP timeout in seconds for governance calls (default 30.0).
         validate: If True, validates the API key against the server on startup.
         known_subagents: Subagent names from ``create_deep_agent(subagents=[...])``.
@@ -61,6 +66,8 @@ def create_openbox_middleware(
         api_key=api_key,
         governance_timeout=governance_timeout,
         validate=validate,
+        agent_did=agent_did,
+        agent_private_key=agent_private_key,
     )
 
     valid_fields = {f.name for f in dataclasses.fields(OpenBoxMiddlewareOptions)}

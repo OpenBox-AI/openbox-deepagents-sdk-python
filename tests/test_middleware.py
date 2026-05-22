@@ -8,6 +8,7 @@ import pytest
 from openbox_langgraph.types import GovernanceVerdictResponse, Verdict
 
 from openbox_deepagent.middleware import OpenBoxMiddleware, OpenBoxMiddlewareOptions
+from openbox_deepagent.middleware_factory import create_openbox_middleware
 from openbox_deepagent.middleware_hooks import (
     _extract_last_user_message,
     _extract_prompt_from_messages,
@@ -51,6 +52,8 @@ def middleware(mock_client, mock_span_processor):
         mock_gc.return_value = MagicMock(
             api_url="http://test", api_key="obx_test_key",
             governance_timeout=30.0,
+            agent_did=None,
+            agent_private_key=None,
         )
         # merge_config returns a config-like object with all necessary attrs
         config = MagicMock()
@@ -106,6 +109,67 @@ class TestConstruction:
 
     def test_get_known_subagents_sorted(self, middleware):
         assert middleware.get_known_subagents() == sorted(["general-purpose", "researcher"])
+
+    def test_factory_forwards_agent_identity_to_initialize(self):
+        """Factory forwards DID signing config to the shared LangGraph initializer."""
+        with patch("openbox_langgraph.config.initialize") as mock_init:
+            with patch("openbox_deepagent.middleware.get_global_config") as mock_gc:
+                mock_gc.return_value = MagicMock(
+                    api_url="https://test.openbox.ai",
+                    api_key="obx_test_123",
+                    governance_timeout=30.0,
+                    agent_did=None,
+                    agent_private_key=None,
+                )
+                with patch("openbox_deepagent.middleware.GovernanceClient"):
+                    with patch("openbox_deepagent.middleware.merge_config") as mock_mc:
+                        mock_mc.return_value = MagicMock()
+
+                        create_openbox_middleware(
+                            api_url="https://test.openbox.ai",
+                            api_key="obx_test_123",
+                            agent_did="did:aip:550e8400-e29b-41d4-a716-446655440000",
+                            agent_private_key="key",
+                        )
+
+                        call_kwargs = mock_init.call_args.kwargs
+                        assert (
+                            call_kwargs["agent_did"]
+                            == "did:aip:550e8400-e29b-41d4-a716-446655440000"
+                        )
+                        assert call_kwargs["agent_private_key"] == "key"
+
+    def test_middleware_passes_agent_identity_to_client_and_hooks(self):
+        """Middleware forwards resolved global DID config to client and hook governance."""
+        with patch("openbox_deepagent.middleware.get_global_config") as mock_gc:
+            mock_gc.return_value = MagicMock(
+                api_url="https://test.openbox.ai",
+                api_key="obx_test_123",
+                governance_timeout=30.0,
+                agent_did="did:aip:550e8400-e29b-41d4-a716-446655440000",
+                agent_private_key="key",
+            )
+            with patch("openbox_deepagent.middleware.GovernanceClient") as mock_client:
+                with patch("openbox_deepagent.middleware.merge_config") as mock_mc:
+                    mock_mc.return_value = MagicMock(on_api_error="fail_open")
+                    with patch(
+                        "openbox_langgraph.otel_setup.setup_opentelemetry_for_governance"
+                    ) as mock_setup:
+                        OpenBoxMiddleware()
+
+                        client_kwargs = mock_client.call_args.kwargs
+                        assert (
+                            client_kwargs["agent_did"]
+                            == "did:aip:550e8400-e29b-41d4-a716-446655440000"
+                        )
+                        assert client_kwargs["agent_private_key"] == "key"
+
+                        setup_kwargs = mock_setup.call_args.kwargs
+                        assert (
+                            setup_kwargs["agent_did"]
+                            == "did:aip:550e8400-e29b-41d4-a716-446655440000"
+                        )
+                        assert setup_kwargs["agent_private_key"] == "key"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -495,6 +559,8 @@ class TestFactory:
             mock_gc.return_value = MagicMock(
                 api_url="http://test", api_key="obx_test_key",
                 governance_timeout=30.0,
+                agent_did=None,
+                agent_private_key=None,
             )
             mock_mc.return_value = MagicMock(
                 on_api_error="fail_open", tool_type_map={},
