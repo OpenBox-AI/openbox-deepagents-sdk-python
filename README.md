@@ -109,7 +109,7 @@ Your graph code is untouched.
 pip install openbox-deepagent-sdk-python
 ```
 
-**Requirements:** Python 3.11+, `openbox-langgraph-sdk-python >= 0.1.0`, `langchain >= 0.3.0`, `langgraph >= 0.2`
+**Requirements:** Python 3.11+, `openbox-langgraph-sdk-python >= 0.2.0`, `langchain >= 0.3.0`, `langgraph >= 0.2`
 
 ---
 
