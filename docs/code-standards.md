@@ -435,7 +435,7 @@ dependencies = [
 **Exception**: Direct dependency on unstable SDK:
 ```toml
 dependencies = [
-    "openbox-langgraph-sdk>=0.1.0",  # ← Sourced locally, version constraint optional
+    "openbox-langgraph-sdk-python>=0.2.0",  # Sourced locally, version constraint optional
 ]
 ```
 

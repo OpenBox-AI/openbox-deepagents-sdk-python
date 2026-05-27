@@ -78,7 +78,7 @@ DeepAgents dispatches subagents through the built-in `task` tool. These execute 
 
 | Package | Version | Purpose | Status |
 |---|---|---|---|
-| `openbox-langgraph-sdk` | ≥0.1.0 | Base governance layer (local editable) | Active |
+| `openbox-langgraph-sdk-python` | ≥0.2.0 | Base governance layer (local editable) | Active |
 | `langchain-core` | ≥0.3.0 | AgentMiddleware interface | Active |
 | `langgraph` | ≥0.2.0 | Graph execution + event streams | Active |
 | `deepagents` (optional) | ≥0.1.0 | Type hints only (not required at runtime) | Optional |
