@@ -4,16 +4,18 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openbox-deepagent-sdk-python"
-version = "0.1.0"
+version = "0.2.0"
 description = "OpenBox governance SDK for DeepAgents (langchain-ai/deepagents)"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 dependencies = [
-    "openbox-langgraph-sdk-python>=0.1.0",
+    "openbox-langgraph-sdk-python>=0.2.0",
     "langchain>=0.3.0",
-    "langchain-core>=0.3.0",
+    "langchain-core>=1.3.3",
     "langgraph>=0.2.0",
+    "langsmith>=0.8.0",
+    "urllib3>=2.7.0",
 ]
 
 [project.optional-dependencies]

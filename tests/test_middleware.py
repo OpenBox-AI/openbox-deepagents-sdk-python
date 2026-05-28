@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from openbox_langgraph.types import GovernanceVerdictResponse, Verdict
 
 from openbox_deepagent.middleware import OpenBoxMiddleware, OpenBoxMiddlewareOptions
+from openbox_deepagent.middleware_factory import create_openbox_middleware
 from openbox_deepagent.middleware_hooks import (
     _extract_last_user_message,
     _extract_prompt_from_messages,
@@ -16,6 +17,12 @@ from openbox_deepagent.middleware_hooks import (
     handle_before_agent,
     handle_wrap_model_call,
     handle_wrap_tool_call,
+)
+from openbox_deepagent.subagent_resolver import (
+    graph_has_interrupt_on,
+    hitl_enabled,
+    resolve_deepagent_subagent_name,
+    resolve_subagent_from_tool_call,
 )
 
 # ═══════════════════════════════════════════════════════════════════
@@ -51,6 +58,8 @@ def middleware(mock_client, mock_span_processor):
         mock_gc.return_value = MagicMock(
             api_url="http://test", api_key="obx_test_key",
             governance_timeout=30.0,
+            agent_did=None,
+            agent_private_key=None,
         )
         # merge_config returns a config-like object with all necessary attrs
         config = MagicMock()
@@ -106,6 +115,67 @@ class TestConstruction:
 
     def test_get_known_subagents_sorted(self, middleware):
         assert middleware.get_known_subagents() == sorted(["general-purpose", "researcher"])
+
+    def test_factory_forwards_agent_identity_to_initialize(self):
+        """Factory forwards DID signing config to the shared LangGraph initializer."""
+        with patch("openbox_langgraph.config.initialize") as mock_init:
+            with patch("openbox_deepagent.middleware.get_global_config") as mock_gc:
+                mock_gc.return_value = MagicMock(
+                    api_url="https://test.openbox.ai",
+                    api_key="obx_test_123",
+                    governance_timeout=30.0,
+                    agent_did=None,
+                    agent_private_key=None,
+                )
+                with patch("openbox_deepagent.middleware.GovernanceClient"):
+                    with patch("openbox_deepagent.middleware.merge_config") as mock_mc:
+                        mock_mc.return_value = MagicMock()
+
+                        create_openbox_middleware(
+                            api_url="https://test.openbox.ai",
+                            api_key="obx_test_123",
+                            agent_did="did:aip:550e8400-e29b-41d4-a716-446655440000",
+                            agent_private_key="key",
+                        )
+
+                        call_kwargs = mock_init.call_args.kwargs
+                        assert (
+                            call_kwargs["agent_did"]
+                            == "did:aip:550e8400-e29b-41d4-a716-446655440000"
+                        )
+                        assert call_kwargs["agent_private_key"] == "key"
+
+    def test_middleware_passes_agent_identity_to_client_and_hooks(self):
+        """Middleware forwards resolved global DID config to client and hook governance."""
+        with patch("openbox_deepagent.middleware.get_global_config") as mock_gc:
+            mock_gc.return_value = MagicMock(
+                api_url="https://test.openbox.ai",
+                api_key="obx_test_123",
+                governance_timeout=30.0,
+                agent_did="did:aip:550e8400-e29b-41d4-a716-446655440000",
+                agent_private_key="key",
+            )
+            with patch("openbox_deepagent.middleware.GovernanceClient") as mock_client:
+                with patch("openbox_deepagent.middleware.merge_config") as mock_mc:
+                    mock_mc.return_value = MagicMock(on_api_error="fail_open")
+                    with patch(
+                        "openbox_langgraph.otel_setup.setup_opentelemetry_for_governance"
+                    ) as mock_setup:
+                        OpenBoxMiddleware()
+
+                        client_kwargs = mock_client.call_args.kwargs
+                        assert (
+                            client_kwargs["agent_did"]
+                            == "did:aip:550e8400-e29b-41d4-a716-446655440000"
+                        )
+                        assert client_kwargs["agent_private_key"] == "key"
+
+                        setup_kwargs = mock_setup.call_args.kwargs
+                        assert (
+                            setup_kwargs["agent_did"]
+                            == "did:aip:550e8400-e29b-41d4-a716-446655440000"
+                        )
+                        assert setup_kwargs["agent_private_key"] == "key"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -495,6 +565,8 @@ class TestFactory:
             mock_gc.return_value = MagicMock(
                 api_url="http://test", api_key="obx_test_key",
                 governance_timeout=30.0,
+                agent_did=None,
+                agent_private_key=None,
             )
             mock_mc.return_value = MagicMock(
                 on_api_error="fail_open", tool_type_map={},
@@ -906,3 +978,236 @@ class TestModelCallHookHITLRetry:
                     side_effect=ApprovalRejectedError("Rejected")):
             with pytest.raises(GovernanceHaltError):
                 await handle_wrap_model_call(middleware, model_request, AsyncMock())
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Sync middleware wrapper tests
+# ═══════════════════════════════════════════════════════════════════
+
+class TestSyncMiddlewareWrappers:
+    async def _async_value(self, value):
+        return value
+
+    def test_run_async_without_running_loop(self, middleware):
+        result = middleware._run_async(self._async_value("ok"))
+        assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_run_async_inside_running_loop_uses_executor(self, middleware):
+        result = middleware._run_async(self._async_value("thread-ok"))
+        assert result == "thread-ok"
+        assert middleware._sync_executor is not None
+        middleware._sync_executor.shutdown(wait=True)
+        middleware._sync_executor = None
+
+    def test_before_agent_delegates_to_async_handler(
+        self, middleware, state_with_user_msg, runtime,
+    ):
+        captured = {}
+
+        def run_async(coro):
+            captured["coro"] = coro
+            coro.close()
+            return {"status": "started"}
+
+        middleware._run_async = MagicMock(side_effect=run_async)
+
+        result = middleware.before_agent(state_with_user_msg, runtime)
+
+        assert result == {"status": "started"}
+        assert middleware._sync_mode is True
+        middleware._span_processor.set_sync_mode.assert_called_once_with(True)
+        middleware._run_async.assert_called_once()
+
+    def test_after_agent_delegates_to_async_handler(self, middleware, state_with_user_msg, runtime):
+        def run_async(coro):
+            coro.close()
+            return None
+
+        middleware._run_async = MagicMock(side_effect=run_async)
+
+        result = middleware.after_agent(state_with_user_msg, runtime)
+
+        assert result is None
+        middleware._run_async.assert_called_once()
+
+    def test_wrap_model_call_registers_sync_span_context(self, middleware):
+        request = MagicMock()
+        request.messages = [MagicMock(type="human", content="hello")]
+        handler = MagicMock(return_value="handler-result")
+        middleware._workflow_id = "wf-sync"
+        middleware._run_id = "run-sync"
+        span = MagicMock()
+        span.get_span_context.return_value.trace_id = 12345
+        tracer = MagicMock()
+        tracer.start_span.return_value = span
+
+        async def fake_handle(mw, req, async_handler):
+            assert mw is middleware
+            assert req is request
+            assert await async_handler(req) == "handler-result"
+            return "model-result"
+
+        with patch(
+            "openbox_deepagent.middleware_hooks.handle_wrap_model_call",
+            side_effect=fake_handle,
+        ) as mock_handle, patch(
+            "opentelemetry.trace.get_tracer",
+            return_value=tracer,
+        ), patch(
+            "opentelemetry.trace.set_span_in_context",
+            return_value="span-context",
+        ), patch("opentelemetry.context.attach", return_value="token"), patch(
+            "opentelemetry.context.detach",
+        ) as detach:
+            result = middleware.wrap_model_call(request, handler)
+
+        assert result == "model-result"
+        mock_handle.assert_called_once()
+        middleware._span_processor.register_trace.assert_any_call(12345, "wf-sync", ANY)
+        middleware._span_processor.set_activity_context.assert_called()
+        span.end.assert_called_once()
+        detach.assert_called_once_with("token")
+
+    def test_wrap_tool_call_registers_sync_span_context(self, middleware):
+        request = MagicMock()
+        request.tool_call = {"name": "search_web", "args": {"query": "ai"}}
+        handler = MagicMock(return_value="handler-result")
+        middleware._workflow_id = "wf-sync"
+        middleware._run_id = "run-sync"
+        span = MagicMock()
+        span.get_span_context.return_value.trace_id = 67890
+        tracer = MagicMock()
+        tracer.start_span.return_value = span
+
+        async def fake_handle(mw, req, async_handler):
+            assert mw is middleware
+            assert req is request
+            assert await async_handler(req) == "handler-result"
+            return "tool-result"
+
+        with patch(
+            "openbox_deepagent.middleware_hooks.handle_wrap_tool_call",
+            side_effect=fake_handle,
+        ) as mock_handle, patch(
+            "opentelemetry.trace.get_tracer",
+            return_value=tracer,
+        ), patch(
+            "opentelemetry.trace.set_span_in_context",
+            return_value="span-context",
+        ), patch("opentelemetry.context.attach", return_value="token"), patch(
+            "opentelemetry.context.detach",
+        ) as detach:
+            result = middleware.wrap_tool_call(request, handler)
+
+        assert result == "tool-result"
+        mock_handle.assert_called_once()
+        middleware._span_processor.register_trace.assert_any_call(67890, "wf-sync", ANY)
+        middleware._span_processor.set_activity_context.assert_called()
+        span.end.assert_called_once()
+        detach.assert_called_once_with("token")
+
+    @pytest.mark.asyncio
+    async def test_async_entrypoints_delegate_to_hook_functions(
+        self, middleware, state_with_user_msg, runtime,
+    ):
+        model_request = MagicMock()
+        tool_request = MagicMock()
+        handler = AsyncMock()
+
+        with patch(
+            "openbox_deepagent.middleware_hooks.handle_before_agent",
+            new_callable=AsyncMock,
+            return_value={"before": True},
+        ) as before, patch(
+            "openbox_deepagent.middleware_hooks.handle_after_agent",
+            new_callable=AsyncMock,
+            return_value={"after": True},
+        ) as after, patch(
+            "openbox_deepagent.middleware_hooks.handle_wrap_model_call",
+            new_callable=AsyncMock,
+            return_value="model",
+        ) as model, patch(
+            "openbox_deepagent.middleware_hooks.handle_wrap_tool_call",
+            new_callable=AsyncMock,
+            return_value="tool",
+        ) as tool:
+            assert await middleware.abefore_agent(state_with_user_msg, runtime) == {"before": True}
+            assert middleware._sync_mode is False
+            middleware._span_processor.set_sync_mode.assert_called_with(False)
+            assert await middleware.aafter_agent(state_with_user_msg, runtime) == {"after": True}
+            assert await middleware.awrap_model_call(model_request, handler) == "model"
+            assert await middleware.awrap_tool_call(tool_request, handler) == "tool"
+
+        before.assert_called_once_with(middleware, state_with_user_msg, runtime)
+        after.assert_called_once_with(middleware, state_with_user_msg, runtime)
+        model.assert_called_once_with(middleware, model_request, handler)
+        tool.assert_called_once_with(middleware, tool_request, handler)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Subagent resolver tests
+# ═══════════════════════════════════════════════════════════════════
+
+class TestSubagentResolver:
+    def test_resolve_deepagent_subagent_name_from_stream_event(self):
+        event = MagicMock()
+        event.event = "on_tool_start"
+        event.name = "task"
+        event.data = {"input": {"subagent_type": "researcher"}}
+
+        assert resolve_deepagent_subagent_name(event) == "researcher"
+
+    def test_resolve_deepagent_subagent_name_ignores_non_task_events(self):
+        event = MagicMock()
+        event.event = "on_tool_start"
+        event.name = "read_file"
+        event.data = {"input": {"subagent_type": "researcher"}}
+
+        assert resolve_deepagent_subagent_name(event) is None
+
+        event.event = "on_tool_end"
+        event.name = "task"
+        assert resolve_deepagent_subagent_name(event) is None
+
+    def test_resolve_deepagent_subagent_name_falls_back_to_general_purpose(self):
+        event = MagicMock()
+        event.event = "on_tool_start"
+        event.name = "task"
+        event.data = {"input": {}}
+
+        assert resolve_deepagent_subagent_name(event) == "general-purpose"
+
+    def test_resolve_subagent_from_tool_call(self):
+        assert (
+            resolve_subagent_from_tool_call("task", {"subagent_type": "writer"})
+            == "writer"
+        )
+        assert resolve_subagent_from_tool_call("read_file", {"subagent_type": "writer"}) is None
+        assert resolve_subagent_from_tool_call("task", {}) == "general-purpose"
+
+    def test_hitl_enabled_accepts_none_dict_and_object(self):
+        assert hitl_enabled(None) is False
+        assert hitl_enabled({"enabled": True}) is True
+        assert hitl_enabled({"enabled": False}) is False
+        hitl_config = MagicMock()
+        hitl_config.enabled = True
+        assert hitl_enabled(hitl_config) is True
+
+    def test_graph_has_interrupt_on_variants(self):
+        graph = MagicMock()
+        graph.interrupt_before = ["tools"]
+        graph.interrupt_after = None
+        assert graph_has_interrupt_on(graph) is True
+
+        graph = MagicMock()
+        graph.interrupt_before = None
+        graph.interrupt_after = ("tools",)
+        assert graph_has_interrupt_on(graph) is True
+
+        graph = MagicMock()
+        graph.interrupt_before = []
+        graph.interruptBefore = []
+        graph.interrupt_after = []
+        graph.interruptAfter = []
+        assert graph_has_interrupt_on(graph) is False

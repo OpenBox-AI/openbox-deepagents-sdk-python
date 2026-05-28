@@ -102,6 +102,8 @@ class OpenBoxMiddleware(AgentMiddleware):
             api_key=gc.api_key,
             timeout=gc.governance_timeout,
             on_api_error=self._config.on_api_error,
+            agent_did=gc.agent_did,
+            agent_private_key=gc.agent_private_key,
         )
 
         # OTel span processor for hook-level governance
@@ -119,6 +121,8 @@ class OpenBoxMiddleware(AgentMiddleware):
                 on_api_error=self._config.on_api_error,
                 instrument_file_io=True,
                 sqlalchemy_engine=opts.sqlalchemy_engine,
+                agent_did=gc.agent_did,
+                agent_private_key=gc.agent_private_key,
             )
             # Suppress harmless OTel context detach errors from asyncio.Task
             # boundaries in LangGraph — the token was attached in one task

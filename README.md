@@ -109,7 +109,7 @@ Your graph code is untouched.
 pip install openbox-deepagent-sdk-python
 ```
 
-**Requirements:** Python 3.11+, `openbox-langgraph-sdk-python >= 0.1.0`, `langchain >= 0.3.0`, `langgraph >= 0.2`
+**Requirements:** Python 3.11+, `openbox-langgraph-sdk-python >= 0.2.0`, `langchain >= 0.3.0`, `langgraph >= 0.2`
 
 ---
 
@@ -117,13 +117,15 @@ pip install openbox-deepagent-sdk-python
 
 ### 1. Create an agent in the dashboard
 
-Sign in to [platform.openbox.ai](https://platform.openbox.ai), create an agent named `"ResearchBot"`, and copy your API key.
+Sign in to [platform.openbox.ai](https://platform.openbox.ai), create an agent named `"ResearchBot"`, and copy your API key plus DID credentials.
 
 ### 2. Export credentials
 
 ```bash
 export OPENBOX_URL="https://core.openbox.ai"
 export OPENBOX_API_KEY="obx_live_..."
+export OPENBOX_AGENT_DID="did:aip:..."
+export OPENBOX_AGENT_PRIVATE_KEY="..."
 ```
 
 ### 3. Add OpenBox middleware to your agent
@@ -139,6 +141,8 @@ from openbox_deepagent import create_openbox_middleware
 middleware = create_openbox_middleware(
     api_url=os.environ["OPENBOX_URL"],
     api_key=os.environ["OPENBOX_API_KEY"],
+    agent_did=os.environ["OPENBOX_AGENT_DID"],
+    agent_private_key=os.environ["OPENBOX_AGENT_PRIVATE_KEY"],
     agent_name="ResearchBot",       # must match the agent name in your dashboard
     known_subagents=["researcher", "analyst", "writer", "general-purpose"],
     tool_type_map={"search_web": "http", "export_data": "http"},
@@ -178,6 +182,8 @@ asyncio.run(main())
 |---|---|---|---|
 | `api_url` | `str` | **required** | Base URL of your OpenBox Core instance |
 | `api_key` | `str` | **required** | API key (`obx_live_*` or `obx_test_*`) |
+| `agent_did` | `str` | `OPENBOX_AGENT_DID` | Agent DID used to sign governance requests |
+| `agent_private_key` | `str` | `OPENBOX_AGENT_PRIVATE_KEY` | Base64 raw Ed25519 private key seed for the agent DID |
 | `agent_name` | `str` | `None` | Agent name as configured in the dashboard. Used as `workflow_type` on all governance events — **must match exactly** for policies and Behavior Rules to fire |
 | `known_subagents` | `list[str]` | `["general-purpose"]` | Subagent names from `create_deep_agent(subagents=[...])`. Always include `"general-purpose"` if the default subagent is active |
 | `validate` | `bool` | `True` | Validate API key against server on startup |
