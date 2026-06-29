@@ -1,0 +1,6 @@
+# Ignore specific paths
+tests/
+docs/
+*.test.py
+examples/
+test-agent/
