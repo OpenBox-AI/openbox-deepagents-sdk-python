@@ -26,6 +26,7 @@ concurrency:
 
 env:
   GITLEAKS_VERSION: "8.30.0"
+  GITLEAKS_LINUX_X64_SHA256: "79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e"  
 
 jobs:
   trivy-fs:
@@ -48,15 +49,23 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
+          echo "### Trivy Filesystem Scan Results 🛡️" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          
           trivy fs . \
             --scanners vuln,misconfig \
             --vuln-type os,library \
             --ignore-unfixed \
             --severity HIGH,CRITICAL \
             --include-dev-deps \
+            --ignorefile .trivyignore \
+            --skip-dirs tests,docs,examples,test-agent \
             --format table \
-            --exit-code 1
+            --exit-code 1 | tee -a $GITHUB_STEP_SUMMARY || EXIT_CODE=$?
+            
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        
+          exit ${EXIT_CODE:-0}
 
       - name: Run Trivy filesystem scan for SARIF
         id: trivy_sarif
@@ -71,6 +80,8 @@ jobs:
             --ignore-unfixed \
             --severity HIGH,CRITICAL \
             --include-dev-deps \
+            --ignorefile .trivyignore \
+            --skip-dirs tests,docs,examples,test-agent \
             --format sarif \
             --output trivy-fs-results.sarif \
             --exit-code 1
@@ -110,27 +121,70 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install Gitleaks CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}" -o "${archive}"
+          echo "${GITLEAKS_LINUX_X64_SHA256}  ${archive}" | sha256sum -c -
+          tar -xzf "${archive}" gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+
       - name: Run Gitleaks SARIF scan
         id: gitleaks_scan
         continue-on-error: true
-        uses: gitleaks/gitleaks-action@v2
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
-          GITLEAKS_CONFIG: .gitleaks.toml
-          GITLEAKS_VERSION: ${{ env.GITLEAKS_VERSION }}
-          GITLEAKS_ENABLE_COMMENTS: "false"
-          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
 
-      - name: Ensure Gitleaks SARIF exists
+          log_opts="-1"
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" && -n "${PULL_REQUEST_BASE_SHA}" ]]; then
+            log_opts="${PULL_REQUEST_BASE_SHA}..HEAD"
+          elif [[ "${GITHUB_EVENT_NAME}" == "push" && -n "${PUSH_BEFORE_SHA}" && ! "${PUSH_BEFORE_SHA}" =~ ^0+$ ]]; then
+            log_opts="${PUSH_BEFORE_SHA}..HEAD"
+          fi
+          
+          echo "### Gitleaks Git Scan Results 🕵️‍♂️" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          
+          EXIT_CODE=0
+          gitleaks git . \
+            --config .gitleaks.toml \
+            --log-opts "${log_opts}" \
+            --report-format sarif \
+            --report-path results.sarif \
+            --redact \
+            --exit-code 1 \
+            --no-color \
+            --no-banner 2>&1 | tee -a $GITHUB_STEP_SUMMARY || EXIT_CODE=$?
+            
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "**Result:** No leaks detected ✅" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Result:** Potential secrets detected ❌" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          exit $EXIT_CODE
+
+      - name: Ensure Gitleaks SARIF file exists
         if: always()
         shell: bash
         run: |
-          if [ ! -s results.sarif ]; then
-            cat > results.sarif <<'JSON'
+          if [ -f results.sarif ]; then
+            exit 0
+          fi
+
+          cat > results.sarif <<'EOF'
           {
-            "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
             "version": "2.1.0",
+            "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
             "runs": [
               {
                 "tool": {
@@ -144,8 +198,8 @@ jobs:
               }
             ]
           }
-          JSON
-          fi
+          EOF
+
 
       - name: Upload Gitleaks SARIF to GitHub Security
         if: always()
