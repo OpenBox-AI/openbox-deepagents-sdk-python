@@ -49,7 +49,9 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
+          echo "### Trivy Filesystem Scan Results 🛡️" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          
           trivy fs . \
             --scanners vuln,misconfig \
             --vuln-type os,library \
@@ -57,7 +59,11 @@ jobs:
             --severity HIGH,CRITICAL \
             --include-dev-deps \
             --format table \
-            --exit-code 1
+            --exit-code 1 | tee -a $GITHUB_STEP_SUMMARY || EXIT_CODE=$?
+            
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        
+          exit ${EXIT_CODE:-0}
 
       - name: Run Trivy filesystem scan for SARIF
         id: trivy_sarif
@@ -131,12 +137,18 @@ jobs:
           PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
+
           log_opts="-1"
           if [[ "${GITHUB_EVENT_NAME}" == "pull_request" && -n "${PULL_REQUEST_BASE_SHA}" ]]; then
             log_opts="${PULL_REQUEST_BASE_SHA}..HEAD"
           elif [[ "${GITHUB_EVENT_NAME}" == "push" && -n "${PUSH_BEFORE_SHA}" && ! "${PUSH_BEFORE_SHA}" =~ ^0+$ ]]; then
             log_opts="${PUSH_BEFORE_SHA}..HEAD"
           fi
+          
+          echo "### Gitleaks Git Scan Results 🕵️‍♂️" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          
+          EXIT_CODE=0
           gitleaks git . \
             --config .gitleaks.toml \
             --log-opts "${log_opts}" \
@@ -144,7 +156,18 @@ jobs:
             --report-path results.sarif \
             --redact \
             --exit-code 1 \
-            --no-banner
+            --no-color \
+            --no-banner 2>&1 | tee -a $GITHUB_STEP_SUMMARY || EXIT_CODE=$?
+            
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "**Result:** No leaks detected ✅" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Result:** Potential secrets detected ❌" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          exit $EXIT_CODE
 
       - name: Ensure Gitleaks SARIF file exists
         if: always()
