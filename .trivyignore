@@ -1,6 +1,3 @@
-# Ignore specific paths
-tests/
-docs/
-*.test.py
-examples/
-test-agent/
+# Suppress specific CVE/rule IDs here, one per line. Example:
+# CVE-2023-12345
+# AVD-DS-0001

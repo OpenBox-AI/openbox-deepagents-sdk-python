@@ -166,6 +166,7 @@ jobs:
             --ignore-unfixed \
             --severity HIGH,CRITICAL \
             --ignorefile .trivyignore \
+            --skip-dirs tests,docs,examples,test-agent \
             --include-dev-deps \
             
             --format table \
@@ -188,6 +189,7 @@ jobs:
             --severity HIGH,CRITICAL \
             --include-dev-deps \
             --ignorefile .trivyignore \
+            --skip-dirs tests,docs,examples,test-agent \
             --format sarif \
             --output trivy-release-results.sarif \
             --exit-code 1
